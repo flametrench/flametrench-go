@@ -1,0 +1,83 @@
+{
+  "$schema": "../../fixture.schema.json",
+  "spec_version": "0.1.0",
+  "capability": "ids",
+  "operation": "is_valid",
+  "conformance_level": "MUST",
+  "spec_section": "docs/ids.md#decoding-rules",
+  "description": "isValid returns true for decodable IDs and false for anything that would cause decode to raise. Optional expected_type narrows validation.",
+  "tests": [
+    {
+      "id": "is_valid.true.canonical-usr",
+      "description": "A canonical usr ID is valid.",
+      "input": { "id": "usr_0190f2a81b3c7abc8123456789abcdef" },
+      "expected": { "result": true }
+    },
+    {
+      "id": "is_valid.true.canonical-org",
+      "description": "A canonical org ID is valid.",
+      "input": { "id": "org_01000000000070008000000000000000" },
+      "expected": { "result": true }
+    },
+    {
+      "id": "is_valid.true.canonical-ses",
+      "description": "A canonical ses ID is valid.",
+      "input": { "id": "ses_01ffffffffff7fffbfffffffffffffff" },
+      "expected": { "result": true }
+    },
+    {
+      "id": "is_valid.true.expected-type-match",
+      "description": "isValid with an expected_type that matches returns true.",
+      "input": { "id": "usr_0190f2a81b3c7abc8123456789abcdef", "expected_type": "usr" },
+      "expected": { "result": true }
+    },
+    {
+      "id": "is_valid.false.expected-type-mismatch",
+      "description": "isValid with an expected_type that does NOT match returns false (even though the ID itself is well-formed).",
+      "input": { "id": "usr_0190f2a81b3c7abc8123456789abcdef", "expected_type": "org" },
+      "expected": { "result": false }
+    },
+    {
+      "id": "is_valid.false.missing-separator",
+      "description": "Missing separator makes isValid return false (not throw).",
+      "input": { "id": "usr0190f2a81b3c7abc8123456789abcdef" },
+      "expected": { "result": false }
+    },
+    {
+      "id": "is_valid.false.unregistered-type",
+      "description": "Unregistered type prefix makes isValid return false.",
+      "input": { "id": "xyz_0190f2a81b3c7abc8123456789abcdef" },
+      "expected": { "result": false }
+    },
+    {
+      "id": "is_valid.false.payload-too-short",
+      "description": "Payload too short makes isValid return false.",
+      "input": { "id": "usr_deadbeef" },
+      "expected": { "result": false }
+    },
+    {
+      "id": "is_valid.false.uppercase",
+      "description": "Uppercase hex in payload makes isValid return false.",
+      "input": { "id": "usr_0190F2A81B3C7ABC8123456789ABCDEF" },
+      "expected": { "result": false }
+    },
+    {
+      "id": "is_valid.false.max-uuid",
+      "description": "Max UUID (version nibble f) makes isValid return false.",
+      "input": { "id": "usr_ffffffffffffffffffffffffffffffff" },
+      "expected": { "result": false }
+    },
+    {
+      "id": "is_valid.false.empty-string",
+      "description": "Empty string input is not valid.",
+      "input": { "id": "" },
+      "expected": { "result": false }
+    },
+    {
+      "id": "is_valid.false.garbage",
+      "description": "Arbitrary non-ID text is not valid.",
+      "input": { "id": "not an id at all" },
+      "expected": { "result": false }
+    }
+  ]
+}

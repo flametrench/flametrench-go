@@ -1,0 +1,19 @@
+# Compiled binaries
+*.exe
+*.dll
+*.so
+*.dylib
+
+# Test binaries + coverage
+*.test
+*.out
+coverage.txt
+coverage.html
+
+# Go build artifacts
+vendor/
+
+# IDE
+.idea/
+.vscode/
+*.swp

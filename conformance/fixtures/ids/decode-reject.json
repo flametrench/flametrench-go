@@ -1,0 +1,89 @@
+{
+  "$schema": "../../fixture.schema.json",
+  "spec_version": "0.1.0",
+  "capability": "ids",
+  "operation": "decode",
+  "conformance_level": "MUST",
+  "spec_section": "docs/ids.md#decoding-rules",
+  "description": "Malformed wire-format IDs MUST be rejected. Every rejection case listed in docs/ids.md MUST raise an error; implementations that accept any of these inputs are not conformant.",
+  "tests": [
+    {
+      "id": "decode.reject.missing-separator",
+      "description": "An ID without an underscore separator is rejected.",
+      "input": { "id": "usr0190f2a81b3c7abc8123456789abcdef" },
+      "expected": { "error": "InvalidIdError", "error_matches": "separator" }
+    },
+    {
+      "id": "decode.reject.unregistered-type",
+      "description": "An ID whose prefix is not in the registered set raises InvalidTypeError.",
+      "input": { "id": "xyz_0190f2a81b3c7abc8123456789abcdef" },
+      "expected": { "error": "InvalidTypeError" }
+    },
+    {
+      "id": "decode.reject.payload-too-short",
+      "description": "Payloads shorter than 32 hex characters are rejected.",
+      "input": { "id": "usr_0190f2a8" },
+      "expected": { "error": "InvalidIdError" }
+    },
+    {
+      "id": "decode.reject.payload-too-long",
+      "description": "Payloads longer than 32 hex characters are rejected.",
+      "input": { "id": "usr_0190f2a81b3c7abc8123456789abcdef0000" },
+      "expected": { "error": "InvalidIdError" }
+    },
+    {
+      "id": "decode.reject.uppercase-hex",
+      "description": "Uppercase hex in the payload is rejected — decoders MUST NOT canonicalize on the way in.",
+      "input": { "id": "usr_0190F2A81B3C7ABC8123456789ABCDEF" },
+      "expected": { "error": "InvalidIdError" }
+    },
+    {
+      "id": "decode.reject.non-hex-character",
+      "description": "Non-hex characters in the payload are rejected.",
+      "input": { "id": "usr_0190f2a81b3c7abc8123456789abcdeg0" },
+      "expected": { "error": "InvalidIdError" }
+    },
+    {
+      "id": "decode.reject.empty-payload",
+      "description": "A separator with no payload is rejected.",
+      "input": { "id": "usr_" },
+      "expected": { "error": "InvalidIdError" }
+    },
+    {
+      "id": "decode.reject.empty-string",
+      "description": "An empty string is rejected.",
+      "input": { "id": "" },
+      "expected": { "error": "InvalidIdError" }
+    },
+    {
+      "id": "decode.reject.nil-uuid",
+      "description": "The Nil UUID (version nibble 0) is rejected per docs/ids.md decode rule 5.",
+      "input": { "id": "usr_00000000000000000000000000000000" },
+      "expected": { "error": "InvalidIdError" }
+    },
+    {
+      "id": "decode.reject.max-uuid",
+      "description": "The Max UUID (version nibble f) is rejected per docs/ids.md decode rule 5.",
+      "input": { "id": "usr_ffffffffffffffffffffffffffffffff" },
+      "expected": { "error": "InvalidIdError" }
+    },
+    {
+      "id": "decode.reject.version-nibble-9",
+      "description": "Version nibble 9 is outside the permitted [1-8] range.",
+      "input": { "id": "usr_0190f2a81b3c9abc8123456789abcdef" },
+      "expected": { "error": "InvalidIdError" }
+    },
+    {
+      "id": "decode.reject.version-nibble-a",
+      "description": "Version nibble a is outside the permitted [1-8] range.",
+      "input": { "id": "usr_0190f2a81b3cabcd8123456789abcdef" },
+      "expected": { "error": "InvalidIdError" }
+    },
+    {
+      "id": "decode.reject.version-nibble-e",
+      "description": "Version nibble e is outside the permitted [1-8] range.",
+      "input": { "id": "usr_0190f2a81b3cebcd8123456789abcdef" },
+      "expected": { "error": "InvalidIdError" }
+    }
+  ]
+}

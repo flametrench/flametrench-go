@@ -1,0 +1,53 @@
+{
+  "$schema": "../../fixture.schema.json",
+  "spec_version": "0.1.0",
+  "capability": "ids",
+  "operation": "decode",
+  "conformance_level": "MUST",
+  "spec_section": "docs/ids.md#decoding-rules",
+  "description": "Well-formed wire-format IDs decode to the expected {type, uuid} pair. Round-trip fixtures: decode(encode(x)) must recover x.",
+  "tests": [
+    {
+      "id": "decode.canonical.usr",
+      "description": "The canonical usr conformance fixture, decoded.",
+      "input": { "id": "usr_0190f2a81b3c7abc8123456789abcdef" },
+      "expected": { "result": { "type": "usr", "uuid": "0190f2a8-1b3c-7abc-8123-456789abcdef" } }
+    },
+    {
+      "id": "decode.canonical.org",
+      "description": "The canonical org conformance fixture, decoded.",
+      "input": { "id": "org_01000000000070008000000000000000" },
+      "expected": { "result": { "type": "org", "uuid": "01000000-0000-7000-8000-000000000000" } }
+    },
+    {
+      "id": "decode.canonical.ses",
+      "description": "The canonical ses conformance fixture, decoded.",
+      "input": { "id": "ses_01ffffffffff7fffbfffffffffffffff" },
+      "expected": { "result": { "type": "ses", "uuid": "01ffffff-ffff-7fff-bfff-ffffffffffff" } }
+    },
+    {
+      "id": "decode.roundtrip.mem",
+      "description": "A round-trip encode/decode for the mem prefix recovers the original UUID.",
+      "input": { "id": "mem_0190f2a81b3c7abc8123456789abcdef" },
+      "expected": { "result": { "type": "mem", "uuid": "0190f2a8-1b3c-7abc-8123-456789abcdef" } }
+    },
+    {
+      "id": "decode.roundtrip.inv",
+      "description": "A round-trip encode/decode for the inv prefix recovers the original UUID.",
+      "input": { "id": "inv_0190f2a81b3c7abc8123456789abcdef" },
+      "expected": { "result": { "type": "inv", "uuid": "0190f2a8-1b3c-7abc-8123-456789abcdef" } }
+    },
+    {
+      "id": "decode.roundtrip.cred",
+      "description": "A round-trip encode/decode for the 4-character cred prefix recovers the original UUID.",
+      "input": { "id": "cred_0190f2a81b3c7abc8123456789abcdef" },
+      "expected": { "result": { "type": "cred", "uuid": "0190f2a8-1b3c-7abc-8123-456789abcdef" } }
+    },
+    {
+      "id": "decode.roundtrip.tup",
+      "description": "A round-trip encode/decode for the tup prefix recovers the original UUID.",
+      "input": { "id": "tup_0190f2a81b3c7abc8123456789abcdef" },
+      "expected": { "result": { "type": "tup", "uuid": "0190f2a8-1b3c-7abc-8123-456789abcdef" } }
+    }
+  ]
+}

@@ -1,0 +1,41 @@
+{
+  "$schema": "../../fixture.schema.json",
+  "spec_version": "0.1.0",
+  "capability": "ids",
+  "operation": "type_of",
+  "conformance_level": "MUST",
+  "spec_section": "docs/ids.md#decoding-rules",
+  "description": "typeOf returns the type prefix of a valid ID. Malformed IDs raise the same error decode would raise.",
+  "tests": [
+    {
+      "id": "type_of.usr",
+      "description": "Returns `usr` for a valid usr ID.",
+      "input": { "id": "usr_0190f2a81b3c7abc8123456789abcdef" },
+      "expected": { "result": "usr" }
+    },
+    {
+      "id": "type_of.org",
+      "description": "Returns `org` for a valid org ID.",
+      "input": { "id": "org_01000000000070008000000000000000" },
+      "expected": { "result": "org" }
+    },
+    {
+      "id": "type_of.cred",
+      "description": "Returns `cred` (4-character prefix) for a valid cred ID.",
+      "input": { "id": "cred_0190f2a81b3c7abc8123456789abcdef" },
+      "expected": { "result": "cred" }
+    },
+    {
+      "id": "type_of.reject.garbage",
+      "description": "Arbitrary garbage raises InvalidIdError via decode.",
+      "input": { "id": "garbage" },
+      "expected": { "error": "InvalidIdError" }
+    },
+    {
+      "id": "type_of.reject.unregistered",
+      "description": "An unregistered type prefix raises InvalidTypeError.",
+      "input": { "id": "xyz_0190f2a81b3c7abc8123456789abcdef" },
+      "expected": { "error": "InvalidTypeError" }
+    }
+  ]
+}

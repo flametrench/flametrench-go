@@ -1,0 +1,13 @@
+source:  github.com/flametrench/spec
+tag:     v0.3.0 (branch v03-security-md-pat-section)
+files:
+  - fixtures/ids/encode.json
+  - fixtures/ids/decode.json
+  - fixtures/ids/decode-reject.json
+  - fixtures/ids/is-valid.json
+  - fixtures/ids/type-of.json
+fetched: 2026-05-16
+
+The Go conformance runner consumes these JSON fixtures directly. They MUST
+remain byte-identical with the spec source; refresh whenever the upstream
+fixtures move.

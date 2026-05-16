@@ -1,0 +1,77 @@
+{
+  "$schema": "../../fixture.schema.json",
+  "spec_version": "0.1.0",
+  "capability": "ids",
+  "operation": "encode",
+  "conformance_level": "MUST",
+  "spec_section": "docs/ids.md#encoding-rules",
+  "description": "Canonical UUIDs encode to Flametrench wire-format strings.",
+  "tests": [
+    {
+      "id": "encode.canonical.usr",
+      "description": "The canonical usr conformance fixture.",
+      "input": { "type": "usr", "uuid": "0190f2a8-1b3c-7abc-8123-456789abcdef" },
+      "expected": { "result": "usr_0190f2a81b3c7abc8123456789abcdef" }
+    },
+    {
+      "id": "encode.canonical.org",
+      "description": "The canonical org conformance fixture.",
+      "input": { "type": "org", "uuid": "01000000-0000-7000-8000-000000000000" },
+      "expected": { "result": "org_01000000000070008000000000000000" }
+    },
+    {
+      "id": "encode.canonical.ses",
+      "description": "The canonical ses conformance fixture.",
+      "input": { "type": "ses", "uuid": "01ffffff-ffff-7fff-bfff-ffffffffffff" },
+      "expected": { "result": "ses_01ffffffffff7fffbfffffffffffffff" }
+    },
+    {
+      "id": "encode.length.usr",
+      "description": "An encoded usr ID is exactly 36 characters: 3 (prefix) + 1 (underscore) + 32 (hex).",
+      "input": { "type": "usr", "uuid": "0190f2a8-1b3c-7abc-8123-456789abcdef" },
+      "expected": { "result": "usr_0190f2a81b3c7abc8123456789abcdef" }
+    },
+    {
+      "id": "encode.length.mem",
+      "description": "An encoded mem ID is exactly 36 characters.",
+      "input": { "type": "mem", "uuid": "0190f2a8-1b3c-7abc-8123-456789abcdef" },
+      "expected": { "result": "mem_0190f2a81b3c7abc8123456789abcdef" }
+    },
+    {
+      "id": "encode.length.inv",
+      "description": "An encoded inv ID is exactly 36 characters.",
+      "input": { "type": "inv", "uuid": "0190f2a8-1b3c-7abc-8123-456789abcdef" },
+      "expected": { "result": "inv_0190f2a81b3c7abc8123456789abcdef" }
+    },
+    {
+      "id": "encode.length.cred",
+      "description": "An encoded cred ID is exactly 37 characters — cred prefix is 4 chars.",
+      "input": { "type": "cred", "uuid": "0190f2a8-1b3c-7abc-8123-456789abcdef" },
+      "expected": { "result": "cred_0190f2a81b3c7abc8123456789abcdef" }
+    },
+    {
+      "id": "encode.length.tup",
+      "description": "An encoded tup ID is exactly 36 characters.",
+      "input": { "type": "tup", "uuid": "0190f2a8-1b3c-7abc-8123-456789abcdef" },
+      "expected": { "result": "tup_0190f2a81b3c7abc8123456789abcdef" }
+    },
+    {
+      "id": "encode.normalize.uppercase-uuid",
+      "description": "encode MUST accept uppercase UUID input and produce lowercase output (decoding rejects uppercase; encoding normalizes).",
+      "input": { "type": "usr", "uuid": "0190F2A8-1B3C-7ABC-8123-456789ABCDEF" },
+      "expected": { "result": "usr_0190f2a81b3c7abc8123456789abcdef" }
+    },
+    {
+      "id": "encode.reject.unregistered-type",
+      "description": "Unregistered type prefixes are rejected with InvalidTypeError.",
+      "input": { "type": "xyz", "uuid": "0190f2a8-1b3c-7abc-8123-456789abcdef" },
+      "expected": { "error": "InvalidTypeError" }
+    },
+    {
+      "id": "encode.reject.malformed-uuid",
+      "description": "Malformed UUID input is rejected with InvalidIdError.",
+      "input": { "type": "usr", "uuid": "not-a-uuid" },
+      "expected": { "error": "InvalidIdError" }
+    }
+  ]
+}

@@ -1,0 +1,50 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    name: build + test
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        # Test against the supported Go version range. Pin to 1.22+ at
+        # the spec layer (ADR 0018); a couple of older versions verify
+        # that the SDK doesn't accidentally depend on bleeding-edge
+        # stdlib features.
+        go-version: ['1.22', '1.23']
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ matrix.go-version }}
+          check-latest: true
+
+      - name: Show env
+        run: |
+          go version
+          go env GOMOD GOTOOLCHAIN GOWORK
+
+      - name: Build all packages
+        run: go build ./...
+
+      - name: Test packages/ids
+        working-directory: packages/ids
+        run: go test -race -v ./...
+
+      - name: Test conformance suite
+        working-directory: conformance
+        run: go test -race -v ./...
+
+      - name: Lint (vet)
+        run: go vet ./...
+
+  # The identity / tenancy / authz packages are stubbed at v0.3.0; they
+  # build but have no tests yet. Once each package gains real surface
+  # the next session can extend the matrix above.
