@@ -6,6 +6,66 @@ This is the **5th SDK family** in the Flametrench matrix, added at v0.3.0 per [A
 
 ## [v0.3.0] — Unreleased (hold for SDK family parity)
 
+### Added (Go SDK family — Postgres adapters + WebAuthn verifier complete)
+
+WebAuthn assertion verifier (ES256 / RS256 / EdDSA) and full Postgres
+adapters across all 4 packages. The Go family now has feature parity
+with Python / Node / PHP / Java at the v0.3 spec contract level. Real-
+database integration smoke (12 steps including the ADR 0017
+Postgres-backed rewrite-rule evaluation) passes.
+
+#### WebAuthn verifier (`packages/identity/webauthn.go`)
+- Full COSE_Key parsing (minimal CBOR decoder) + ES256 / RS256 (≥2048-bit) /
+  EdDSA dispatch + counter monotonicity per WebAuthn §6.1.1.
+- 17 cross-SDK conformance fixtures pass (webauthn-assertion,
+  webauthn-assertion-algorithms, webauthn-counter-decrease-rejected).
+- Wired into InMemoryIdentityStore's ConfirmWebAuthnFactor + VerifyMfa,
+  replacing the previous ErrWebAuthnNotImplemented stubs.
+
+#### Postgres adapters (jackc/pgx/v5)
+All three packages now ship Postgres-backed stores with the ADR 0013
+caller-owned-connection pattern. The constructor accepts a `PgxExecutor`
+interface satisfied by `*pgxpool.Pool`, `*pgx.Conn`, and `pgx.Tx`;
+multi-statement operations open a transaction on the executor (or
+inherit if one is already active).
+
+- **packages/identity** (`PostgresIdentityStore`) — full surface: users,
+  3 credential variants with revoke-and-re-add rotation, sessions with
+  refresh-rotates-token, MFA (TOTP + recovery + WebAuthn with the full
+  verifier), PATs with H2 timing-oracle defense + last_used_at
+  coalescing, `usr_mfa_policy` upsert, cascade revoke on user/credential
+  transitions.
+- **packages/tenancy** (`PostgresTenancyStore`) — full surface: orgs
+  with slug-uniqueness conflict, memberships with revoke-and-re-add
+  lifecycle and replaces chain, sole-owner protection on every
+  transition, admin-rank hierarchy gating AdminRemove, TransferOwnership
+  atomic two-step revoke-and-re-add, 5-state invitation machine with
+  lazy + eager expiry, ADR 0009 acceptance binding enforced at the SDK
+  layer, tuple accessors for cross-package wiring with authz.
+- **packages/authz** (`PostgresTupleStore` + `PostgresShareStore`) —
+  full surface: tuple CRUD with natural-key uniqueness, Check + CheckAny
+  fast path (single SQL with `relation = ANY(...)`), share tokens with
+  SHA-256 BYTEA(32) hashing + single-use atomic consume-on-verify.
+
+#### ADR 0017 — Postgres rewrite-rule evaluation (v0.3)
+`NewPostgresTupleStoreWithRules` enables the same rule set as
+`InMemoryTupleStore`. Check evaluates via iterative expansion: one
+indexed SELECT per direct lookup; one SELECT per `tuple_to_userset`
+enumeration; recursive over `computed_userset`. Cycle detection, depth
++ fan-out bounds, and short-circuit semantics from ADR 0007 are
+unchanged. The Go integration smoke test exercises the
+parent_org → member hop end-to-end against a real database.
+
+#### Integration smoke
+`conformance/postgres_integration_test.go` drives a 12-step end-to-end
+smoke against a real Postgres database (gated on FT_GO_POSTGRES_URL).
+Steps: create user → password credential → verify password → create
+session → verify session token → create org with owner mem + tuple →
+direct tuple Check → add admin member → CheckAny matches → ChangeRole
+replaces-and-re-adds → share-token roundtrip including revoke →
+PAT roundtrip including revoke → ADR 0017 rule-eval via parent_org
+hop. All 12 pass against Postgres 17.
+
 ### Added (Go SDK family — feature parity push, ADR 0018)
 
 The Go family joins the Flametrench SDK matrix as the 5th family. This
