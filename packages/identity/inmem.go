@@ -922,11 +922,49 @@ func (s *InMemoryIdentityStore) ConfirmTotpFactor(mfaID, code string) (Factor, e
 }
 
 func (s *InMemoryIdentityStore) ConfirmWebAuthnFactor(mfaID string, proof WebAuthnProof) (Factor, error) {
-	// WebAuthn assertion verification (ES256/RS256/EdDSA over
-	// authenticatorData + clientDataJSON) is deferred to a follow-up
-	// session. The factor record + lifecycle are usable; only this
-	// cryptographic step is missing.
-	return Factor{}, ErrWebAuthnNotImplemented
+	s.mu.Lock()
+	f, ok := s.factors[mfaID]
+	if !ok {
+		s.mu.Unlock()
+		return Factor{}, fmt.Errorf("factor %s: %w", mfaID, ErrNotFound)
+	}
+	if f.Type != FactorTypeWebAuthn || f.Status != FactorStatusPending {
+		s.mu.Unlock()
+		return Factor{}, &PreconditionError{Msg: "factor not in pending WebAuthn state", Reason: "invalid_transition"}
+	}
+	if f.Identifier != proof.CredentialID {
+		s.mu.Unlock()
+		return Factor{}, &PreconditionError{Msg: "credential id mismatch", Reason: "cred_id_mismatch"}
+	}
+	publicKey := s.webauthnPublicKeys[mfaID]
+	storedRpID := f.RpID
+	storedCount := f.SignCount
+	s.mu.Unlock()
+
+	result, err := WebAuthnVerifyAssertion(WebAuthnVerifyOptions{
+		CosePublicKey:       publicKey,
+		StoredSignCount:     storedCount,
+		StoredRpID:          storedRpID,
+		ExpectedChallenge:   proof.ExpectedChallenge,
+		ExpectedOrigin:      proof.ExpectedOrigin,
+		AuthenticatorData:   proof.AuthenticatorData,
+		ClientDataJSON:      proof.ClientDataJSON,
+		Signature:           proof.Signature,
+		RequireUserVerified: true,
+		RequireUserPresent:  true,
+	})
+	if err != nil {
+		return Factor{}, err
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	f = s.factors[mfaID]
+	f.Status = FactorStatusActive
+	f.SignCount = result.NewSignCount
+	f.UpdatedAt = s.now()
+	s.factors[mfaID] = f
+	return f, nil
 }
 
 func (s *InMemoryIdentityStore) GetFactor(mfaID string) (Factor, error) {
@@ -990,9 +1028,59 @@ func (s *InMemoryIdentityStore) VerifyMfa(usrID string, proof MfaProof) (MfaVeri
 	case proof.Recovery != nil:
 		return s.verifyRecoveryProof(usrID, *proof.Recovery)
 	case proof.WebAuthn != nil:
-		return MfaVerifyResult{}, ErrWebAuthnNotImplemented
+		return s.verifyWebAuthnProof(usrID, *proof.WebAuthn)
 	}
 	return MfaVerifyResult{}, errors.New("empty MFA proof")
+}
+
+func (s *InMemoryIdentityStore) verifyWebAuthnProof(usrID string, proof WebAuthnProof) (MfaVerifyResult, error) {
+	s.mu.Lock()
+	var mfaID string
+	for id, f := range s.factors {
+		if f.UsrID == usrID && f.Type == FactorTypeWebAuthn && f.Status == FactorStatusActive && f.Identifier == proof.CredentialID {
+			mfaID = id
+			break
+		}
+	}
+	if mfaID == "" {
+		s.mu.Unlock()
+		return MfaVerifyResult{}, fmt.Errorf("no active WebAuthn factor for credential: %w", ErrNotFound)
+	}
+	f := s.factors[mfaID]
+	publicKey := s.webauthnPublicKeys[mfaID]
+	storedRpID := f.RpID
+	storedCount := f.SignCount
+	s.mu.Unlock()
+
+	result, err := WebAuthnVerifyAssertion(WebAuthnVerifyOptions{
+		CosePublicKey:       publicKey,
+		StoredSignCount:     storedCount,
+		StoredRpID:          storedRpID,
+		ExpectedChallenge:   proof.ExpectedChallenge,
+		ExpectedOrigin:      proof.ExpectedOrigin,
+		AuthenticatorData:   proof.AuthenticatorData,
+		ClientDataJSON:      proof.ClientDataJSON,
+		Signature:           proof.Signature,
+		RequireUserVerified: true,
+		RequireUserPresent:  true,
+	})
+	if err != nil {
+		return MfaVerifyResult{}, err
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	f = s.factors[mfaID]
+	f.SignCount = result.NewSignCount
+	f.UpdatedAt = s.now()
+	s.factors[mfaID] = f
+	newSC := result.NewSignCount
+	return MfaVerifyResult{
+		MfaID:         mfaID,
+		Type:          FactorTypeWebAuthn,
+		MfaVerifiedAt: s.now(),
+		NewSignCount:  &newSC,
+	}, nil
 }
 
 func (s *InMemoryIdentityStore) verifyTotpProof(usrID string, proof TotpProof) (MfaVerifyResult, error) {

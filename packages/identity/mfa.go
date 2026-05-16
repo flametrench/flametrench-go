@@ -367,11 +367,9 @@ func IsValidRecoveryCode(code string) bool {
 	return true
 }
 
-// ErrWebAuthnNotImplemented is returned by EnrollWebAuthnFactor /
-// ConfirmWebAuthnFactor / VerifyMfa(WebAuthn) until the WebAuthn
-// assertion verifier lands in a follow-up session.
-//
-// The factor record + lifecycle are usable; only the cryptographic
-// assertion verification (ES256/RS256/EdDSA over authenticatorData +
-// clientDataJSON) is deferred.
-var ErrWebAuthnNotImplemented = errors.New("WebAuthn assertion verification not implemented in this Go SDK release (follow-up session); ES256/RS256/EdDSA verifier is pinned in ADR 0010")
+// ErrWebAuthnNotImplemented was returned by ConfirmWebAuthnFactor /
+// VerifyMfa(WebAuthn) until the WebAuthn assertion verifier landed.
+// Retained as a deprecated sentinel for adopters who held a reference;
+// the methods themselves now return either a concrete *WebAuthnError
+// from webauthn.go or success.
+var ErrWebAuthnNotImplemented = errors.New("deprecated: WebAuthn verifier is now implemented (see webauthn.go)")
