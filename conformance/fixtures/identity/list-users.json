@@ -1,0 +1,215 @@
+{
+  "$schema": "../../fixture.schema.json",
+  "spec_version": "0.2.0",
+  "capability": "identity",
+  "operation": "list_users",
+  "conformance_level": "MUST",
+  "spec_section": "decisions/0015-list-users.md",
+  "description": "v0.2 (ADR 0015) adds an enumeration primitive to IdentityStore. This fixture exercises basic ordering, status filter, query substring against active credential identifiers, multi-page cursor walking, and the empty-result case. Closes spec#10.",
+  "tests": [
+    {
+      "id": "list_users.basic_enumeration_id_ordered",
+      "description": "list_users with no filters returns all users in id ASC order. UUIDv7 makes this approximately creation-time-ordered.",
+      "users": [],
+      "steps": [
+        { "op": "create_user", "captures": { "u1": "user.id" } },
+        { "op": "create_user", "captures": { "u2": "user.id" } },
+        { "op": "create_user", "captures": { "u3": "user.id" } },
+        {
+          "op": "list_users",
+          "input": {},
+          "expected": {
+            "data_ids_in_order": ["{u1}", "{u2}", "{u3}"],
+            "next_cursor": null
+          }
+        }
+      ]
+    },
+    {
+      "id": "list_users.status_filter_active",
+      "description": "Filtering by status returns only matching users. Suspended users are excluded when status='active'.",
+      "users": [],
+      "steps": [
+        { "op": "create_user", "captures": { "active_id": "user.id" } },
+        { "op": "create_user", "captures": { "suspended_id": "user.id" } },
+        { "op": "suspend_user", "input": { "usr_id": "{suspended_id}" } },
+        {
+          "op": "list_users",
+          "input": { "status": "active" },
+          "expected": {
+            "data_ids_in_order": ["{active_id}"]
+          }
+        },
+        {
+          "op": "list_users",
+          "input": { "status": "suspended" },
+          "expected": {
+            "data_ids_in_order": ["{suspended_id}"]
+          }
+        }
+      ]
+    },
+    {
+      "id": "list_users.status_filter_revoked",
+      "description": "Revoked users appear under status='revoked' but are excluded by default-active filter.",
+      "users": [],
+      "steps": [
+        { "op": "create_user", "captures": { "live_id": "user.id" } },
+        { "op": "create_user", "captures": { "dead_id": "user.id" } },
+        { "op": "revoke_user", "input": { "usr_id": "{dead_id}" } },
+        {
+          "op": "list_users",
+          "input": { "status": "revoked" },
+          "expected": {
+            "data_ids_in_order": ["{dead_id}"]
+          }
+        }
+      ]
+    },
+    {
+      "id": "list_users.query_substring_against_active_credential_identifier",
+      "description": "query is a case-insensitive substring filter against active credential identifiers. Matches partial domain searches.",
+      "users": [],
+      "steps": [
+        {
+          "op": "create_user_with_password_credential",
+          "input": { "identifier": "alice@example.com", "password": "long-enough-password-for-floor" },
+          "captures": { "alice_id": "user.id" }
+        },
+        {
+          "op": "create_user_with_password_credential",
+          "input": { "identifier": "bob@example.com", "password": "long-enough-password-for-floor" },
+          "captures": { "bob_id": "user.id" }
+        },
+        {
+          "op": "create_user_with_password_credential",
+          "input": { "identifier": "carol@other.test", "password": "long-enough-password-for-floor" },
+          "captures": { "carol_id": "user.id" }
+        },
+        {
+          "op": "list_users",
+          "input": { "query": "example" },
+          "expected": {
+            "data_ids_unordered": ["{alice_id}", "{bob_id}"]
+          }
+        }
+      ]
+    },
+    {
+      "id": "list_users.query_case_insensitive",
+      "description": "query is case-insensitive — a search for `EXAMPLE` matches identifier `alice@example.com`.",
+      "users": [],
+      "steps": [
+        {
+          "op": "create_user_with_password_credential",
+          "input": { "identifier": "alice@example.com", "password": "long-enough-password-for-floor" },
+          "captures": { "alice_id": "user.id" }
+        },
+        {
+          "op": "list_users",
+          "input": { "query": "EXAMPLE" },
+          "expected": {
+            "data_ids_unordered": ["{alice_id}"]
+          }
+        }
+      ]
+    },
+    {
+      "id": "list_users.query_skips_revoked_credentials",
+      "description": "Revoked credentials' identifiers do NOT contribute to the query match. Only active credentials are searched.",
+      "users": [],
+      "steps": [
+        {
+          "op": "create_user_with_password_credential",
+          "input": { "identifier": "gone@example.com", "password": "long-enough-password-for-floor" },
+          "captures": { "user_id": "user.id", "cred_id": "credential.id" }
+        },
+        {
+          "op": "revoke_credential",
+          "input": { "cred_id": "{cred_id}" }
+        },
+        {
+          "op": "list_users",
+          "input": { "query": "gone@example.com" },
+          "expected": {
+            "data_ids_unordered": []
+          }
+        }
+      ]
+    },
+    {
+      "id": "list_users.cursor_walks_pages",
+      "description": "Calling list_users with the next_cursor returns the next page; the final page returns next_cursor=null.",
+      "users": [],
+      "steps": [
+        { "op": "create_user", "captures": { "u1": "user.id" } },
+        { "op": "create_user", "captures": { "u2": "user.id" } },
+        { "op": "create_user", "captures": { "u3": "user.id" } },
+        { "op": "create_user", "captures": { "u4": "user.id" } },
+        { "op": "create_user", "captures": { "u5": "user.id" } },
+        {
+          "op": "list_users",
+          "input": { "limit": 2 },
+          "captures": { "page1_cursor": "page.next_cursor" },
+          "expected": {
+            "data_ids_in_order": ["{u1}", "{u2}"]
+          }
+        },
+        {
+          "op": "list_users",
+          "input": { "cursor": "{page1_cursor}", "limit": 2 },
+          "captures": { "page2_cursor": "page.next_cursor" },
+          "expected": {
+            "data_ids_in_order": ["{u3}", "{u4}"]
+          }
+        },
+        {
+          "op": "list_users",
+          "input": { "cursor": "{page2_cursor}", "limit": 2 },
+          "expected": {
+            "data_ids_in_order": ["{u5}"],
+            "next_cursor": null
+          }
+        }
+      ]
+    },
+    {
+      "id": "list_users.empty_install",
+      "description": "list_users on an install with no users returns an empty page and null cursor.",
+      "users": [],
+      "steps": [
+        {
+          "op": "list_users",
+          "input": {},
+          "expected": {
+            "data_ids_in_order": [],
+            "next_cursor": null
+          }
+        }
+      ]
+    },
+    {
+      "id": "list_users.includes_display_name",
+      "description": "display_name (ADR 0014) MUST be returned on each row when set; null when absent.",
+      "users": [],
+      "steps": [
+        {
+          "op": "create_user",
+          "input": { "display_name": "Alice" },
+          "captures": { "alice_id": "user.id" }
+        },
+        { "op": "create_user", "captures": { "bob_id": "user.id" } },
+        {
+          "op": "list_users",
+          "input": {},
+          "expected": {
+            "user_display_names": {
+              "{alice_id}": "Alice",
+              "{bob_id}": null
+            }
+          }
+        }
+      ]
+    }
+  ]
+}

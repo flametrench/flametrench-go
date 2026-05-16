@@ -1,0 +1,177 @@
+{
+  "$schema": "../../fixture.schema.json",
+  "spec_version": "0.2.0",
+  "capability": "identity",
+  "operation": "update_user",
+  "conformance_level": "MUST",
+  "spec_section": "decisions/0014-user-display-name.md",
+  "description": "v0.2 (ADR 0014) adds an optional `display_name` field to User plus an `update_user` operation. This fixture exercises round-trip through createUser, partial-update semantics (omitted vs explicit null), and the suspended-vs-revoked update gate. Closes spec#9.",
+  "tests": [
+    {
+      "id": "user_display_name.create_with_display_name",
+      "description": "createUser with display_name stores it and returns it on getUser.",
+      "users": [],
+      "steps": [
+        {
+          "op": "create_user",
+          "input": { "display_name": "Nathan Call" },
+          "captures": { "usr_id": "user.id" }
+        },
+        {
+          "op": "assert_user_fields",
+          "input": {
+            "usr_id": "{usr_id}",
+            "expected_display_name": "Nathan Call"
+          }
+        }
+      ]
+    },
+    {
+      "id": "user_display_name.create_without_display_name",
+      "description": "createUser without display_name stores null. Backwards-compatible with v0.1 callers that pass an empty body.",
+      "users": [],
+      "steps": [
+        {
+          "op": "create_user",
+          "input": {},
+          "captures": { "usr_id": "user.id" }
+        },
+        {
+          "op": "assert_user_fields",
+          "input": {
+            "usr_id": "{usr_id}",
+            "expected_display_name": null
+          }
+        }
+      ]
+    },
+    {
+      "id": "user_display_name.update_set",
+      "description": "update_user with display_name set persists the new value.",
+      "users": [],
+      "steps": [
+        {
+          "op": "create_user",
+          "input": {},
+          "captures": { "usr_id": "user.id" }
+        },
+        {
+          "op": "update_user",
+          "input": { "usr_id": "{usr_id}", "display_name": "Renamed" }
+        },
+        {
+          "op": "assert_user_fields",
+          "input": {
+            "usr_id": "{usr_id}",
+            "expected_display_name": "Renamed"
+          }
+        }
+      ]
+    },
+    {
+      "id": "user_display_name.update_clear_to_null",
+      "description": "update_user with display_name: null explicitly clears the field. Distinguishes the omitted-vs-null sentinel.",
+      "users": [],
+      "steps": [
+        {
+          "op": "create_user",
+          "input": { "display_name": "To Be Cleared" },
+          "captures": { "usr_id": "user.id" }
+        },
+        {
+          "op": "update_user",
+          "input": { "usr_id": "{usr_id}", "display_name": null }
+        },
+        {
+          "op": "assert_user_fields",
+          "input": {
+            "usr_id": "{usr_id}",
+            "expected_display_name": null
+          }
+        }
+      ]
+    },
+    {
+      "id": "user_display_name.update_unicode",
+      "description": "Full Unicode display names are accepted as-is. The spec mandates no normalization (NFC, case-folding, trimming).",
+      "users": [],
+      "steps": [
+        {
+          "op": "create_user",
+          "input": { "display_name": "山田 太郎" },
+          "captures": { "usr_id": "user.id" }
+        },
+        {
+          "op": "assert_user_fields",
+          "input": {
+            "usr_id": "{usr_id}",
+            "expected_display_name": "山田 太郎"
+          }
+        }
+      ]
+    },
+    {
+      "id": "user_display_name.update_suspended_user_allowed",
+      "description": "Suspended users MAY have display_name updated. The display name is a UI render hint; allowing it to change while suspended supports renaming in admin tooling without first reinstating.",
+      "users": [],
+      "steps": [
+        {
+          "op": "create_user",
+          "input": { "display_name": "Original" },
+          "captures": { "usr_id": "user.id" }
+        },
+        {
+          "op": "suspend_user",
+          "input": { "usr_id": "{usr_id}" }
+        },
+        {
+          "op": "update_user",
+          "input": { "usr_id": "{usr_id}", "display_name": "Renamed While Suspended" }
+        },
+        {
+          "op": "assert_user_fields",
+          "input": {
+            "usr_id": "{usr_id}",
+            "expected_display_name": "Renamed While Suspended"
+          }
+        }
+      ]
+    },
+    {
+      "id": "user_display_name.update_revoked_user_rejected",
+      "description": "update_user against a revoked user MUST raise AlreadyTerminalError. Revoked is terminal; display-name edits don't reach back.",
+      "users": [],
+      "steps": [
+        {
+          "op": "create_user",
+          "input": { "display_name": "RIP" },
+          "captures": { "usr_id": "user.id" }
+        },
+        {
+          "op": "revoke_user",
+          "input": { "usr_id": "{usr_id}" }
+        },
+        {
+          "op": "update_user",
+          "input": { "usr_id": "{usr_id}", "display_name": "Whatever" },
+          "expected": { "error": "AlreadyTerminalError" }
+        }
+      ]
+    },
+    {
+      "id": "user_display_name.update_unknown_user_rejected",
+      "description": "update_user against an unknown usr_id MUST raise NotFoundError.",
+      "users": [],
+      "steps": [
+        {
+          "op": "update_user",
+          "input": {
+            "usr_id": "usr_00000000000000000000000000000000",
+            "display_name": "ghost"
+          },
+          "expected": { "error": "NotFoundError" }
+        }
+      ]
+    }
+  ]
+}
