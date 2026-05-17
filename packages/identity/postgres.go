@@ -966,6 +966,11 @@ func (s *PostgresIdentityStore) RevokeSession(sesID string) (Session, error) {
 
 // ─── MFA ───
 
+// PendingFactorTTL is how long a TOTP/WebAuthn factor stays in 'pending'
+// before the schema's CHECK constraint requires it to either confirm or
+// expire out. Matches the Python SDK default.
+const PendingFactorTTL = 24 * time.Hour
+
 func (s *PostgresIdentityStore) EnrollTotpFactor(usrID, label string, opts TotpComputeOptions) (TotpEnrollmentResult, error) {
 	usrU, err := wireToUUID(usrID)
 	if err != nil {
@@ -975,13 +980,28 @@ func (s *PostgresIdentityStore) EnrollTotpFactor(usrID, label string, opts TotpC
 	if err != nil {
 		return TotpEnrollmentResult{}, err
 	}
+	algorithm := opts.Algorithm
+	if algorithm == "" {
+		algorithm = DefaultTotpAlgorithm
+	}
+	digits := opts.Digits
+	if digits == 0 {
+		digits = DefaultTotpDigits
+	}
+	period := opts.Period
+	if period == 0 {
+		period = DefaultTotpPeriod
+	}
+	pendingExpiresAt := s.clock().Add(PendingFactorTTL)
 	newID := uuid.Must(uuid.NewV7())
 	var f Factor
 	err = s.exec.QueryRow(s.ctx, `
-		INSERT INTO mfa (id, usr_id, type, identifier, status, totp_secret)
-		VALUES ($1, $2, 'totp', $3, 'pending', $4)
+		INSERT INTO mfa (id, usr_id, type, identifier, status,
+		                 totp_secret, totp_algorithm, totp_digits, totp_period,
+		                 pending_expires_at)
+		VALUES ($1, $2, 'totp', $3, 'pending', $4, $5, $6, $7, $8)
 		RETURNING id, created_at, updated_at`,
-		newID, usrU, label, secret,
+		newID, usrU, label, secret, algorithm, digits, period, pendingExpiresAt,
 	).Scan(&newID, &f.CreatedAt, &f.UpdatedAt)
 	if err != nil {
 		return TotpEnrollmentResult{}, err
@@ -1003,14 +1023,16 @@ func (s *PostgresIdentityStore) EnrollWebAuthnFactor(usrID, credentialID string,
 	if err != nil {
 		return WebAuthnEnrollmentResult{}, err
 	}
+	pendingExpiresAt := s.clock().Add(PendingFactorTTL)
 	newID := uuid.Must(uuid.NewV7())
 	var f Factor
 	err = s.exec.QueryRow(s.ctx, `
 		INSERT INTO mfa (id, usr_id, type, identifier, status,
-		                 webauthn_public_key, webauthn_sign_count, webauthn_rp_id)
-		VALUES ($1, $2, 'webauthn', $3, 'pending', $4, $5, $6)
+		                 webauthn_public_key, webauthn_sign_count, webauthn_rp_id,
+		                 pending_expires_at)
+		VALUES ($1, $2, 'webauthn', $3, 'pending', $4, $5, $6, $7)
 		RETURNING id, created_at, updated_at`,
-		newID, usrU, credentialID, publicKey, signCount, rpID,
+		newID, usrU, credentialID, publicKey, signCount, rpID, pendingExpiresAt,
 	).Scan(&newID, &f.CreatedAt, &f.UpdatedAt)
 	if err != nil {
 		return WebAuthnEnrollmentResult{}, err
@@ -1095,7 +1117,7 @@ func (s *PostgresIdentityStore) ConfirmTotpFactor(mfaID, code string) (Factor, e
 		}
 		var resID uuid.UUID
 		err = tx.QueryRow(s.ctx,
-			`UPDATE mfa SET status = 'active', updated_at = now() WHERE id = $1
+			`UPDATE mfa SET status = 'active', pending_expires_at = NULL, updated_at = now() WHERE id = $1
 			 RETURNING id, created_at, updated_at`, u,
 		).Scan(&resID, &f.CreatedAt, &f.UpdatedAt)
 		if err != nil {
@@ -1161,7 +1183,8 @@ func (s *PostgresIdentityStore) ConfirmWebAuthnFactor(mfaID string, proof WebAut
 		}
 		var resID uuid.UUID
 		err = tx.QueryRow(s.ctx, `
-			UPDATE mfa SET status = 'active', webauthn_sign_count = $2, updated_at = now()
+			UPDATE mfa SET status = 'active', webauthn_sign_count = $2,
+			       pending_expires_at = NULL, updated_at = now()
 			WHERE id = $1 RETURNING id, created_at, updated_at`,
 			u, result.NewSignCount,
 		).Scan(&resID, &f.CreatedAt, &f.UpdatedAt)
@@ -1293,14 +1316,44 @@ func (s *PostgresIdentityStore) transFactor(mfaID string, to FactorStatus) (Fact
 		if status == FactorStatusRevoked {
 			return fmt.Errorf("factor %s: %w", mfaID, ErrAlreadyTerminal)
 		}
-		if _, err := tx.Exec(s.ctx, `UPDATE mfa SET status = $2, updated_at = now() WHERE id = $1`, u, to); err != nil {
-			return err
-		}
-		got, err := s.loadFactor(u)
+		var (
+			usrU       uuid.UUID
+			typ        string
+			identifier *string
+			rpID       *string
+			signCount  *int64
+			recCons    []bool
+		)
+		err = tx.QueryRow(s.ctx, `
+			UPDATE mfa SET status = $2, updated_at = now() WHERE id = $1
+			RETURNING usr_id, type, identifier, status,
+			          webauthn_rp_id, webauthn_sign_count, recovery_consumed,
+			          created_at, updated_at`, u, to,
+		).Scan(&usrU, &typ, &identifier, &f.Status, &rpID, &signCount, &recCons, &f.CreatedAt, &f.UpdatedAt)
 		if err != nil {
 			return err
 		}
-		f = got
+		f.ID = uuidToWire("mfa", u)
+		f.UsrID = uuidToWire("usr", usrU)
+		f.Type = FactorType(typ)
+		if identifier != nil {
+			f.Identifier = *identifier
+		}
+		if rpID != nil {
+			f.RpID = *rpID
+		}
+		if signCount != nil {
+			f.SignCount = *signCount
+		}
+		if f.Type == FactorTypeRecovery {
+			rem := 0
+			for _, c := range recCons {
+				if !c {
+					rem++
+				}
+			}
+			f.Remaining = rem
+		}
 		return nil
 	})
 	return f, err
@@ -1503,12 +1556,18 @@ func (s *PostgresIdentityStore) CreatePat(in CreatePatInput) (CreatePatResult, e
 		return CreatePatResult{}, err
 	}
 	token := patWire + "_" + secret
+	// Postgres `scope TEXT[] NOT NULL DEFAULT '{}'` — a nil slice from
+	// the Go caller must be normalized to an empty array, not NULL.
+	scope := in.Scope
+	if scope == nil {
+		scope = []string{}
+	}
 	var pat PersonalAccessToken
 	err = s.exec.QueryRow(s.ctx, `
 		INSERT INTO pat (id, usr_id, name, scope, secret_hash, expires_at)
 		VALUES ($1, $2, $3, $4, $5, $6)
 		RETURNING name, scope, expires_at, last_used_at, revoked_at, created_at, updated_at`,
-		newID, usrU, in.Name, in.Scope, hash, in.ExpiresAt,
+		newID, usrU, in.Name, scope, hash, in.ExpiresAt,
 	).Scan(&pat.Name, &pat.Scope, &pat.ExpiresAt, &pat.LastUsedAt, &pat.RevokedAt, &pat.CreatedAt, &pat.UpdatedAt)
 	if err != nil {
 		return CreatePatResult{}, err
@@ -1656,12 +1715,15 @@ func (s *PostgresIdentityStore) VerifyPatToken(token string) (VerifiedPat, error
 	if !ok {
 		return VerifiedPat{}, ErrInvalidPatToken
 	}
-	// Coalesced last_used_at update.
+	// Coalesced last_used_at update. We discard the error here: this
+	// is a best-effort update on the success path, and surfacing a DB
+	// error would invert "PAT verified successfully" into a failure.
+	threshold := now.Add(-time.Duration(s.patLastUsedCoalesceSeconds) * time.Second)
 	_, _ = s.exec.Exec(s.ctx, `
-		UPDATE pat SET last_used_at = $2, updated_at = $2
+		UPDATE pat SET last_used_at = $2
 		WHERE id = $1 AND revoked_at IS NULL
-		  AND (last_used_at IS NULL OR last_used_at < $2 - make_interval(secs => $3))`,
-		patU, now, s.patLastUsedCoalesceSeconds,
+		  AND (last_used_at IS NULL OR last_used_at < $3)`,
+		patU, now, threshold,
 	)
 	return VerifiedPat{PatID: patWire, UsrID: uuidToWire("usr", usrU), Scope: scope}, nil
 }

@@ -1213,7 +1213,7 @@ func (s *InMemoryIdentityStore) CreatePat(in CreatePatInput) (CreatePatResult, e
 	// patID is "pat_<32hex>" already.
 	token := patID + "_" + secret
 	now := s.now()
-	scope := append([]string(nil), in.Scope...)
+	scope := append([]string{}, in.Scope...)
 	pat := PersonalAccessToken{
 		ID: patID, UsrID: in.UsrID, Name: in.Name, Scope: scope,
 		Status: PatStatusActive, ExpiresAt: in.ExpiresAt,
