@@ -1052,12 +1052,18 @@ func (s *PostgresTenancyStore) AcceptInvitation(invID string, opts AcceptInvitat
 			return err
 		}
 		materialized := []Tuple{{SubjectType: "usr", SubjectID: uuidToWire("usr", acceptingU), Relation: string(inv.Role), ObjectType: "org", ObjectID: inv.OrgID}}
-		// Expand pre_tuples.
+		// Expand pre_tuples. PreTuple.ObjectID is wire-format
+		// (`prefix_<32hex>`); the tup.object_id column is uuid, so the
+		// wire form must be parsed before INSERT.
 		for _, pt := range inv.PreTuples {
+			objU, err := wireToUUID(pt.ObjectID)
+			if err != nil {
+				return fmt.Errorf("pre_tuple object_id %q: %w", pt.ObjectID, err)
+			}
 			if _, err := tx.Exec(s.ctx, `
 				INSERT INTO tup (id, subject_type, subject_id, relation, object_type, object_id, created_by)
 				VALUES ($1, 'usr', $2, $3, $4, $5, $2)`,
-				uuid.Must(uuid.NewV7()), acceptingU, pt.Relation, pt.ObjectType, pt.ObjectID,
+				uuid.Must(uuid.NewV7()), acceptingU, pt.Relation, pt.ObjectType, objU,
 			); err != nil {
 				return err
 			}
