@@ -32,10 +32,25 @@ jobs:
           go env GOMOD GOTOOLCHAIN GOWORK
 
       - name: Build all packages
-        run: go build ./...
+        run: |
+          for m in packages/ids packages/identity packages/tenancy packages/authz conformance; do
+            (cd "$m" && go build ./...) || exit 1
+          done
 
       - name: Test packages/ids
         working-directory: packages/ids
+        run: go test -race -v ./...
+
+      - name: Test packages/identity
+        working-directory: packages/identity
+        run: go test -race -v ./...
+
+      - name: Test packages/tenancy
+        working-directory: packages/tenancy
+        run: go test -race -v ./...
+
+      - name: Test packages/authz
+        working-directory: packages/authz
         run: go test -race -v ./...
 
       - name: Test conformance suite
@@ -43,8 +58,7 @@ jobs:
         run: go test -race -v ./...
 
       - name: Lint (vet)
-        run: go vet ./...
-
-  # The identity / tenancy / authz packages are stubbed at v0.3.0; they
-  # build but have no tests yet. Once each package gains real surface
-  # the next session can extend the matrix above.
+        run: |
+          for m in packages/ids packages/identity packages/tenancy packages/authz conformance; do
+            (cd "$m" && go vet ./...) || exit 1
+          done
