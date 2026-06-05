@@ -453,7 +453,7 @@ func testTransferOwnership(t *testing.T, newStore storeFactory) {
 		if got.ToMembership.Role != RoleOwner {
 			t.Errorf("to role = %q", got.ToMembership.Role)
 		}
-		if got.FromMembership.Role != RoleAdmin {
+		if got.FromMembership.Role != RoleMember {
 			t.Errorf("from role = %q", got.FromMembership.Role)
 		}
 	})

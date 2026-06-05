@@ -9,12 +9,24 @@ package tenancy
 
 import (
 	"fmt"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
 
 	flametrenchids "github.com/flametrench/flametrench-go/packages/ids"
 )
+
+// slugRe enforces the org-slug pattern: lowercase alphanum + hyphens,
+// no leading/trailing hyphen, 1–63 chars (DNS-label cap from ADR 0011).
+var slugRe = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$`)
+
+func validateSlug(slug string) error {
+	if !slugRe.MatchString(slug) {
+		return &PreconditionError{Msg: "invalid org slug format", Reason: "invalid_slug"}
+	}
+	return nil
+}
 
 // Compile-time guarantee.
 var _ TenancyStore = (*InMemoryTenancyStore)(nil)
@@ -72,6 +84,9 @@ func (s *InMemoryTenancyStore) CreateOrg(creator string, opts CreateOrgOptions) 
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if opts.Slug != nil {
+		if err := validateSlug(*opts.Slug); err != nil {
+			return CreateOrgResult{}, err
+		}
 		if _, taken := s.orgBySlug[*opts.Slug]; taken {
 			return CreateOrgResult{}, fmt.Errorf("slug %q: %w", *opts.Slug, ErrOrgSlugConflict)
 		}
@@ -135,6 +150,9 @@ func (s *InMemoryTenancyStore) UpdateOrg(orgID string, in UpdateOrgInput) (Organ
 		o.Slug = nil
 	} else if in.Slug != nil {
 		newSlug := *in.Slug
+		if err := validateSlug(newSlug); err != nil {
+			return Organization{}, err
+		}
 		if existing, taken := s.orgBySlug[newSlug]; taken && existing != orgID {
 			return Organization{}, fmt.Errorf("slug %q: %w", newSlug, ErrOrgSlugConflict)
 		}
@@ -461,7 +479,10 @@ func (s *InMemoryTenancyStore) AdminRemove(memID, adminUsrID string) (Membership
 		return Membership{}, fmt.Errorf("admin not a member: %w", ErrForbidden)
 	}
 	admin := s.memberships[adminMemID]
-	if admin.Role.AdminRank() <= target.Role.AdminRank() {
+	if admin.Role.AdminRank() < 3 {
+		return Membership{}, ErrForbidden
+	}
+	if admin.Role.AdminRank() < target.Role.AdminRank() {
 		return Membership{}, ErrRoleHierarchy
 	}
 	if target.Role == RoleOwner && s.countActiveOwnersLocked(target.OrgID) == 1 {
@@ -479,6 +500,9 @@ func (s *InMemoryTenancyStore) AdminRemove(memID, adminUsrID string) (Membership
 func (s *InMemoryTenancyStore) TransferOwnership(orgID, fromMemID, toMemID string) (TransferOwnershipResult, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if fromMemID == toMemID {
+		return TransferOwnershipResult{}, &PreconditionError{Msg: "cannot transfer ownership to self", Reason: "self_transfer"}
+	}
 	from, ok := s.memberships[fromMemID]
 	if !ok || from.OrgID != orgID || from.Role != RoleOwner || from.Status != StatusActive {
 		return TransferOwnershipResult{}, &PreconditionError{Msg: "from is not an active owner", Reason: "not_active_owner"}
@@ -489,9 +513,8 @@ func (s *InMemoryTenancyStore) TransferOwnership(orgID, fromMemID, toMemID strin
 	}
 	// Promote `to` to owner (revoke-and-re-add).
 	s.changeRoleAtomicLocked(toMemID, RoleOwner)
-	// Demote `from` to admin if more than one owner remains; otherwise this is
-	// the standard owner-rotation pattern from ADR 0002.
-	s.changeRoleAtomicLocked(fromMemID, RoleAdmin)
+	// Demote `from` to member (spec: "atomically promote target to owner and demote donor to member").
+	s.changeRoleAtomicLocked(fromMemID, RoleMember)
 	// Look up the latest membership records for both (they got new IDs).
 	newFromID := s.activeMemByOrgUsr[orgUsrKey(orgID, from.UsrID)]
 	newToID := s.activeMemByOrgUsr[orgUsrKey(orgID, to.UsrID)]

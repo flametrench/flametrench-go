@@ -135,7 +135,7 @@ func TestInMemTransferOwnership(t *testing.T) {
 	if result.ToMembership.Role != RoleOwner {
 		t.Errorf("to role = %q", result.ToMembership.Role)
 	}
-	if result.FromMembership.Role != RoleAdmin {
+	if result.FromMembership.Role != RoleMember {
 		t.Errorf("from role = %q", result.FromMembership.Role)
 	}
 }

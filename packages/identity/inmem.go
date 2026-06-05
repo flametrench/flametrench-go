@@ -153,6 +153,9 @@ func (s *InMemoryIdentityStore) UpdateUser(usrID string, in UpdateUserInput) (Us
 	if !ok {
 		return User{}, fmt.Errorf("user %s: %w", usrID, ErrNotFound)
 	}
+	if u.Status == StatusRevoked {
+		return User{}, fmt.Errorf("user %s is revoked: %w", usrID, ErrAlreadyTerminal)
+	}
 	if in.ClearDisplayName {
 		u.DisplayName = nil
 	} else if in.DisplayName != nil {
