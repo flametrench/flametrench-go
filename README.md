@@ -11,9 +11,9 @@ This is a Go workspace monorepo. Four packages live under `packages/`, each its 
 | Module | Purpose | Status |
 |---|---|---|
 | [`packages/ids`](packages/ids) | Wire-format prefixed identifiers (UUIDv7) | ✅ v0.3.0 (in-memory + conformance green) |
-| [`packages/identity`](packages/identity) | Users, credentials, sessions, MFA, PATs | ✅ v0.3.0 in-memory; 🚧 Postgres adapter scaffolded |
-| [`packages/tenancy`](packages/tenancy) | Organizations, memberships, invitations | ✅ v0.3.0 in-memory; 🚧 Postgres adapter scaffolded |
-| [`packages/authz`](packages/authz) | Tuples, exact-match `check()`, rewrite rules, share tokens | ✅ v0.3.0 in-memory; 🚧 Postgres adapter scaffolded |
+| [`packages/identity`](packages/identity) | Users, credentials, sessions, MFA, PATs | ✅ v0.3.0 in-memory + Postgres adapter complete (80.1% coverage) |
+| [`packages/tenancy`](packages/tenancy) | Organizations, memberships, invitations | ✅ v0.3.0 in-memory + Postgres adapter complete (80.1% coverage) |
+| [`packages/authz`](packages/authz) | Tuples, exact-match `check()`, rewrite rules, share tokens | ✅ v0.3.0 in-memory + Postgres adapter complete (81.0% coverage) |
 
 The repo is structured per [ADR 0018](https://github.com/flametrench/spec/blob/main/decisions/0018-go-sdk-family-addition.md). Module path stems are `github.com/flametrench/flametrench-go/packages/{ids,identity,tenancy,authz}`.
 
@@ -35,9 +35,9 @@ This is **first-party SDK family #5**, added at the v0.3.0 spec release per ADR 
 v0.3.0 is held until the Go family reaches parity with the other four. Current state:
 
 - `packages/ids` — full implementation; 21 unit tests + 48 conformance cases green.
-- `packages/identity` — full in-memory implementation (users, credentials, sessions, MFA TOTP + recovery codes, PATs with H2 timing-oracle defense + H6 secret length cap). 5 unit tests green. Postgres adapter scaffolded; full implementation lands in a follow-up session. WebAuthn assertion verification (ES256/RS256/EdDSA over authenticatorData) is deferred — factor record + lifecycle work; verification surfaces ErrWebAuthnNotImplemented.
-- `packages/tenancy` — full in-memory implementation (orgs, memberships with revoke-and-re-add, 5-state invitation machine including ADR 0009 binding, sole-owner protection, admin-rank hierarchy, transfer-ownership). 4 unit tests green. Postgres adapter scaffolded.
-- `packages/authz` — full in-memory implementation (tuples, Check + CheckAny, rewrite rules with ComputedUserset + TupleToUserset hop, share tokens with single-use semantics). 5 unit tests green. Postgres adapter scaffolded.
+- `packages/identity` — full in-memory + Postgres adapter implementation (users, credentials, sessions, MFA TOTP + recovery codes + WebAuthn ES256/RS256/EdDSA, PATs with H2 timing-oracle defense + H6 secret length cap). 80.1% coverage. 12-step real-database integration smoke passes against Postgres 17.
+- `packages/tenancy` — full in-memory + Postgres adapter implementation (orgs, memberships with revoke-and-re-add, 5-state invitation machine including ADR 0009 binding, sole-owner protection, admin-rank hierarchy, transfer-ownership). 80.1% coverage.
+- `packages/authz` — full in-memory + Postgres adapter implementation (tuples, Check + CheckAny, rewrite rules with ComputedUserset + TupleToUserset hop, ADR 0017 Postgres rewrite-rule evaluation, share tokens with single-use semantics). 81.0% coverage.
 
 ## Development
 
