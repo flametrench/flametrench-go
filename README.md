@@ -10,29 +10,29 @@ This is a Go workspace monorepo. Four packages live under `packages/`, each its 
 
 | Module | Purpose | Status |
 |---|---|---|
-| [`packages/ids`](packages/ids) | Wire-format prefixed identifiers (UUIDv7) | ✅ v0.3.0 (in-memory + conformance green) |
-| [`packages/identity`](packages/identity) | Users, credentials, sessions, MFA, PATs | ✅ v0.3.0 in-memory + Postgres adapter complete (80.1% coverage) |
-| [`packages/tenancy`](packages/tenancy) | Organizations, memberships, invitations | ✅ v0.3.0 in-memory + Postgres adapter complete (80.1% coverage) |
-| [`packages/authz`](packages/authz) | Tuples, exact-match `check()`, rewrite rules, share tokens | ✅ v0.3.0 in-memory + Postgres adapter complete (81.0% coverage) |
+| [`packages/ids`](packages/ids) | Wire-format prefixed identifiers (UUIDv7) | ✅ v0.3.1 (in-memory + conformance green) |
+| [`packages/identity`](packages/identity) | Users, credentials, sessions, MFA, PATs | ✅ v0.3.1 in-memory + Postgres adapter complete (80.1% coverage) |
+| [`packages/tenancy`](packages/tenancy) | Organizations, memberships, invitations | ✅ v0.3.1 in-memory + Postgres adapter complete (80.1% coverage) |
+| [`packages/authz`](packages/authz) | Tuples, exact-match `check()`, rewrite rules, share tokens | ✅ v0.3.1 in-memory + Postgres adapter complete (81.0% coverage) |
 
 The repo is structured per [ADR 0018](https://github.com/flametrench/spec/blob/main/decisions/0018-go-sdk-family-addition.md). Module path stems are `github.com/flametrench/flametrench-go/packages/{ids,identity,tenancy,authz}`.
 
 ## Install
 
 ```bash
-go get github.com/flametrench/flametrench-go/packages/ids@v0.3.0
-go get github.com/flametrench/flametrench-go/packages/identity@v0.3.0
-go get github.com/flametrench/flametrench-go/packages/tenancy@v0.3.0
-go get github.com/flametrench/flametrench-go/packages/authz@v0.3.0
+go get github.com/flametrench/flametrench-go/packages/ids@v0.3.1
+go get github.com/flametrench/flametrench-go/packages/identity@v0.3.1
+go get github.com/flametrench/flametrench-go/packages/tenancy@v0.3.1
+go get github.com/flametrench/flametrench-go/packages/authz@v0.3.1
 ```
 
 No central registry — Go's module proxy serves directly from this repository's tags.
 
 ## Status
 
-This is **first-party SDK family #5**, added at the v0.3.0 spec release per ADR 0018. The driving signal was sitesource/admin's expansion into Go-implemented services in May 2026; the four-family cap was lifted with that adopter signal in hand.
+This is **first-party SDK family #5**, added at the v0.3.1 spec release per ADR 0018. The driving signal was sitesource/admin's expansion into Go-implemented services in May 2026; the four-family cap was lifted with that adopter signal in hand.
 
-v0.3.0 is held until the Go family reaches parity with the other four. Current state:
+v0.3.1 is held until the Go family reaches parity with the other four. Current state:
 
 - `packages/ids` — full implementation; 21 unit tests + 48 conformance cases green.
 - `packages/identity` — full in-memory + Postgres adapter implementation (users, credentials, sessions, MFA TOTP + recovery codes + WebAuthn ES256/RS256/EdDSA, PATs with H2 timing-oracle defense + H6 secret length cap). 80.1% coverage. 12-step real-database integration smoke passes against Postgres 17.

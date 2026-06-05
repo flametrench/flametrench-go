@@ -15,3 +15,10 @@ require (
 	golang.org/x/sys v0.17.0 // indirect
 	golang.org/x/text v0.14.0 // indirect
 )
+
+// v0.3.0 and v0.3.0-rc.1 shipped with workspace-only replace directives that
+// break go get for consumers outside the Go workspace. Use v0.3.1 or later.
+retract (
+	v0.3.0
+	v0.3.0-rc.1
+)
