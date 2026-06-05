@@ -1,0 +1,26 @@
+# Docker Compose for running the Postgres integration test suite.
+#
+# Usage:
+#   docker compose -f docker-compose.test.yml up -d
+#   export FT_GO_POSTGRES_URL="postgres://fttest:fttest@localhost:5532/fttest?sslmode=disable"
+#   go test -C packages/identity ./... -v
+#   go test -C packages/tenancy  ./... -v
+#   go test -C packages/authz    ./... -v
+#   docker compose -f docker-compose.test.yml down -v
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: fttest
+      POSTGRES_PASSWORD: fttest
+      POSTGRES_DB: fttest
+    ports:
+      - "5532:5432"
+    volumes:
+      - ./tests/postgres-schema.sql:/docker-entrypoint-initdb.d/01-schema.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U fttest -d fttest"]
+      interval: 2s
+      timeout: 5s
+      retries: 10
