@@ -104,6 +104,11 @@ func scanOrg(row pgx.Row) (Organization, error) {
 const orgCols = `id, status, name, slug, created_at, updated_at`
 
 func (s *PostgresTenancyStore) CreateOrg(creator string, opts CreateOrgOptions) (CreateOrgResult, error) {
+	if opts.Slug != nil {
+		if err := validateSlug(*opts.Slug); err != nil {
+			return CreateOrgResult{}, err
+		}
+	}
 	creatorU, err := wireToUUID(creator)
 	if err != nil {
 		return CreateOrgResult{}, err
@@ -198,6 +203,9 @@ func (s *PostgresTenancyStore) UpdateOrg(orgID string, in UpdateOrgInput) (Organ
 		if in.ClearSlug {
 			nextSlug = nil
 		} else if in.Slug != nil {
+			if err := validateSlug(*in.Slug); err != nil {
+				return err
+			}
 			nextSlug = in.Slug
 		}
 		row = tx.QueryRow(s.ctx, `
@@ -702,7 +710,10 @@ func (s *PostgresTenancyStore) AdminRemove(memID, adminUsrID string) (Membership
 		if err != nil {
 			return err
 		}
-		if adminRole.AdminRank() <= target.Role.AdminRank() {
+		if adminRole.AdminRank() < 3 {
+			return ErrForbidden
+		}
+		if adminRole.AdminRank() < target.Role.AdminRank() {
 			return ErrRoleHierarchy
 		}
 		if target.Role == RoleOwner {
@@ -765,10 +776,13 @@ func (s *PostgresTenancyStore) TransferOwnership(orgID, fromMemID, toMemID strin
 		if toOrg != orgU || toStatus != StatusActive {
 			return &PreconditionError{Msg: "to is not an active member", Reason: "not_active_member"}
 		}
+		if fromU == toU {
+			return &PreconditionError{Msg: "cannot transfer ownership to self", Reason: "self_transfer"}
+		}
 		if err := s.changeRoleLocked(tx, toU, toUsr, orgU, toRole, RoleOwner); err != nil {
 			return err
 		}
-		if err := s.changeRoleLocked(tx, fromU, fromUsr, orgU, RoleOwner, RoleAdmin); err != nil {
+		if err := s.changeRoleLocked(tx, fromU, fromUsr, orgU, RoleOwner, RoleMember); err != nil {
 			return err
 		}
 		// Read back the new memberships for both users.

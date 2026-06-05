@@ -194,6 +194,9 @@ func (s *PostgresIdentityStore) UpdateUser(usrID string, in UpdateUserInput) (Us
 		if err != nil {
 			return err
 		}
+		if status == StatusRevoked {
+			return fmt.Errorf("user %s is revoked: %w", usrID, ErrAlreadyTerminal)
+		}
 		next := name
 		if in.ClearDisplayName {
 			next = nil
