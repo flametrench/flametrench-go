@@ -4,7 +4,30 @@ All notable changes to `github.com/flametrench/flametrench-go` are recorded here
 
 This is the **5th SDK family** in the Flametrench matrix, added at v0.3.0 per [ADR 0018](https://github.com/flametrench/spec/blob/main/decisions/0018-go-sdk-family-addition.md).
 
-## [v0.3.0] — Unreleased (hold for SDK family parity)
+## [v0.3.2] — 2026-06-05
+
+### Changed
+
+- Added `retract` directives for `v0.3.0` and `v0.3.0-rc.1` across all 4
+  sub-modules. Both versions shipped with workspace-only `replace` directives
+  in the published `go.mod` files that caused `go get` to fail outside the Go
+  workspace. Tooling will now warn clearly instead of throwing an opaque resolve
+  error. Use `v0.3.1` or later.
+- README `go get` examples updated to `v0.3.1`.
+
+## [v0.3.1] — 2026-06-05
+
+### Fixed
+
+- Removed workspace-only `replace github.com/flametrench/flametrench-go/packages/ids => ../ids`
+  directives from `identity/go.mod`, `tenancy/go.mod`, and `authz/go.mod`.
+  These directives are handled at the workspace level by `go.work` for local
+  development but were committed to the published modules, causing `go get` to
+  fail with "unknown revision 000000000000" for any consumer outside the Go
+  workspace. Updated the `ids` require to the real published version `v0.3.0`.
+  **This is the first installable release. No behavior changes from `v0.3.0`.**
+
+## [v0.3.0] — 2026-06-05
 
 ### Added (Go SDK family — Postgres adapters + WebAuthn verifier complete)
 
