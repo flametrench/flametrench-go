@@ -1,0 +1,35 @@
+{
+  "$schema": "../../fixture.schema.json",
+  "spec_version": "0.4.0",
+  "capability": "ids",
+  "operation": "type_of",
+  "conformance_level": "MUST",
+  "spec_section": "docs/ids.md#type-prefix-registry",
+  "description": "Pins the v0.4 type-prefix registry (`docs/ids.md`) cross-SDK so a silently-dropped prefix is a hard conformance failure, not a local green. `type_of` returns the prefix of a valid id; a prefix the SDK has NOT registered raises `InvalidTypeError` instead — so `type_of(aud_<uuid>) → 'aud'` fails on any SDK whose registry dropped `aud`. This is the durable guard for the drift Go PR #3 surfaced (file/flag/not dropped from the Go registry; Python/Java registries stopped at v0.2). `runnable_today:false` until all five ids SDKs have the v0.4 prefixes registered on main (Go/Python/Java restores in flight) — then flip to `true` and a re-drift becomes a cross-SDK red. (Making it runnable while 3/5 lag would redden main's ids legs and poison the vendor tree; it flips the moment the registries are restored, the per-primitive-gate pattern.)",
+  "tests": [
+    {
+      "id": "registered_prefixes.aud",
+      "description": "`aud` (audit event, v0.4 ADR 0019) is a registered prefix — type_of returns it, not InvalidTypeError.",
+      "input": { "id": "aud_0190f2a81b3c7abc8123456789abcdef" },
+      "expected": { "result": "aud" }
+    },
+    {
+      "id": "registered_prefixes.file",
+      "description": "`file` (file metadata, v0.4 ADR 0020) is a registered prefix.",
+      "input": { "id": "file_0190f2a81b3c7abc8123456789abcdef" },
+      "expected": { "result": "file" }
+    },
+    {
+      "id": "registered_prefixes.flag",
+      "description": "`flag` (feature flag, v0.4 ADR 0021) is a registered prefix.",
+      "input": { "id": "flag_0190f2a81b3c7abc8123456789abcdef" },
+      "expected": { "result": "flag" }
+    },
+    {
+      "id": "registered_prefixes.not",
+      "description": "`not` (notification, v0.4 ADR 0022) is a registered prefix.",
+      "input": { "id": "not_0190f2a81b3c7abc8123456789abcdef" },
+      "expected": { "result": "not" }
+    }
+  ]
+}
