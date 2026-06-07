@@ -1,0 +1,216 @@
+{
+  "$schema": "../../fixture.schema.json",
+  "spec_version": "0.4.0",
+  "capability": "file-metadata",
+  "operation": "create_file_metadata",
+  "conformance_level": "MUST",
+  "spec_section": "decisions/0020-file-metadata-primitive.md#entity-shape",
+  "description": "File-metadata create/get/update/delete round-trips and the valid lifecycle transitions (ADR 0020). These are positive structural-invariant vectors: each registers metadata, then reads/transitions it and asserts the stored shape — the `FileMetadata` entity round-trips; `pending → active` sets and freezes (size_bytes/checksum/storage_ref); soft-delete retains the record; immutable fields (content_type/owner/scope) are preserved across an update. They assert NOTHING about blob bytes (the primitive is storage-agnostic — `storage_ref` is an opaque adopter pointer, stored verbatim, never dereferenced). Matching for `get` results is SUPERSET (result ⊇ expected). Access-control coupling (the create-writes-owner-tuple invariant, via authz `check()`) and the negative/rejection vectors (immutable-field mutation, invalid transitions, name-length, bad checksum) are FOLLOW-ONS — the negatives need a file-lifecycle error taxonomy ADR 0020 does not yet name (flagged to FT Spec, parallel to the audit InvalidFormatError gap). `runnable_today:false` until an SDK implements the file-metadata layer.",
+  "tests": [
+    {
+      "id": "create_active.full_shape_round_trip",
+      "description": "A file registered directly as `active` MUST supply size_bytes, checksum, and storage_ref at create (ADR 0020 lifecycle). create → get round-trips the full FileMetadata shape: scope, owner, name, content_type, the three byte-facts, and status:active. The opaque storage_ref is stored verbatim.",
+      "users": ["owner"],
+      "steps": [
+        {
+          "op": "create_file_metadata",
+          "input": {
+            "scope": "org_0190f2a81b3c7abc8123000000000004",
+            "owner_usr_id": "{owner}",
+            "name": "q3-report.pdf",
+            "content_type": "application/pdf",
+            "size_bytes": 184320,
+            "checksum": { "algo": "sha-256", "value": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855" },
+            "storage_ref": "s3://app-uploads/2026/06/q3-report.pdf",
+            "status": "active"
+          },
+          "captures": { "file_id": "id" }
+        },
+        {
+          "op": "get_file_metadata",
+          "input": { "id": "{file_id}" },
+          "expected": {
+            "result": {
+              "id": "{file_id}",
+              "scope": "org_0190f2a81b3c7abc8123000000000004",
+              "owner_usr_id": "{owner}",
+              "name": "q3-report.pdf",
+              "content_type": "application/pdf",
+              "size_bytes": 184320,
+              "checksum": { "algo": "sha-256", "value": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855" },
+              "storage_ref": "s3://app-uploads/2026/06/q3-report.pdf",
+              "status": "active"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": "create_pending.then_activate_sets_byte_facts",
+      "description": "A `pending` file MAY have null size_bytes/checksum/storage_ref (upload handshake in flight). On `pending → active` those three MUST be set (non-null). Asserts: get of the pending record shows the three as null + status pending; after update to active supplying them, get shows them set + status active.",
+      "users": ["owner"],
+      "steps": [
+        {
+          "op": "create_file_metadata",
+          "input": {
+            "scope": "org_0190f2a81b3c7abc8123000000000004",
+            "owner_usr_id": "{owner}",
+            "name": "upload.bin",
+            "content_type": "application/octet-stream",
+            "size_bytes": null,
+            "checksum": null,
+            "storage_ref": null,
+            "status": "pending"
+          },
+          "captures": { "file_id": "id" }
+        },
+        {
+          "op": "get_file_metadata",
+          "input": { "id": "{file_id}" },
+          "expected": {
+            "result": {
+              "id": "{file_id}",
+              "name": "upload.bin",
+              "size_bytes": null,
+              "checksum": null,
+              "storage_ref": null,
+              "status": "pending"
+            }
+          }
+        },
+        {
+          "op": "update_file_metadata",
+          "input": {
+            "id": "{file_id}",
+            "status": "active",
+            "size_bytes": 4096,
+            "checksum": { "algo": "sha-256", "value": "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08" },
+            "storage_ref": "s3://app-uploads/2026/06/upload.bin"
+          }
+        },
+        {
+          "op": "get_file_metadata",
+          "input": { "id": "{file_id}" },
+          "expected": {
+            "result": {
+              "id": "{file_id}",
+              "status": "active",
+              "size_bytes": 4096,
+              "checksum": { "algo": "sha-256", "value": "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08" },
+              "storage_ref": "s3://app-uploads/2026/06/upload.bin"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": "pending_to_deleted.transition",
+      "description": "`pending → deleted` is a valid transition (ADR 0020): a never-activated upload can be abandoned. Asserts the record transitions to status:deleted and remains fetchable (soft delete retains the record).",
+      "users": ["owner"],
+      "steps": [
+        {
+          "op": "create_file_metadata",
+          "input": {
+            "scope": "org_0190f2a81b3c7abc8123000000000004",
+            "owner_usr_id": "{owner}",
+            "name": "abandoned.tmp",
+            "content_type": "application/octet-stream",
+            "size_bytes": null,
+            "checksum": null,
+            "storage_ref": null,
+            "status": "pending"
+          },
+          "captures": { "file_id": "id" }
+        },
+        {
+          "op": "delete_file_metadata",
+          "input": { "id": "{file_id}" }
+        },
+        {
+          "op": "get_file_metadata",
+          "input": { "id": "{file_id}" },
+          "expected": {
+            "result": { "id": "{file_id}", "name": "abandoned.tmp", "status": "deleted" }
+          }
+        }
+      ]
+    },
+    {
+      "id": "active_to_deleted.soft_delete_retains_record",
+      "description": "`active → deleted` is a soft delete: the record is RETAINED (for audit reconstruction and reference integrity) but the file is treated as gone. Asserts that after delete the record is still fetchable with status:deleted and its metadata (name, content_type, owner) intact — the primitive does not hard-delete the row.",
+      "users": ["owner"],
+      "steps": [
+        {
+          "op": "create_file_metadata",
+          "input": {
+            "scope": "org_0190f2a81b3c7abc8123000000000004",
+            "owner_usr_id": "{owner}",
+            "name": "avatar.png",
+            "content_type": "image/png",
+            "size_bytes": 2048,
+            "checksum": { "algo": "sha-256", "value": "5e884898da28047151d0e56f8dc6292773603d0d6aabbdd62a11ef721d1542d8" },
+            "storage_ref": "s3://app-uploads/avatars/u2.png",
+            "status": "active"
+          },
+          "captures": { "file_id": "id" }
+        },
+        {
+          "op": "delete_file_metadata",
+          "input": { "id": "{file_id}" }
+        },
+        {
+          "op": "get_file_metadata",
+          "input": { "id": "{file_id}" },
+          "expected": {
+            "result": {
+              "id": "{file_id}",
+              "name": "avatar.png",
+              "content_type": "image/png",
+              "owner_usr_id": "{owner}",
+              "status": "deleted"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": "update_name.immutable_fields_preserved",
+      "description": "`name` is mutable; content_type, owner_usr_id, and scope are immutable after create (ADR 0020). Asserts an update of `name` round-trips the new name while the immutable fields read back UNCHANGED at their create-time values. (This pins preservation; rejection of an attempt to MUTATE an immutable field is a negative vector, deferred pending the file error taxonomy.)",
+      "users": ["owner"],
+      "steps": [
+        {
+          "op": "create_file_metadata",
+          "input": {
+            "scope": "org_0190f2a81b3c7abc8123000000000004",
+            "owner_usr_id": "{owner}",
+            "name": "draft.md",
+            "content_type": "text/markdown",
+            "size_bytes": 1200,
+            "checksum": { "algo": "sha-256", "value": "2c26b46b68ffc68ff99b453c1d30413413422d706483bfa0f98a5e886266e7ae" },
+            "storage_ref": "s3://app-uploads/docs/draft.md",
+            "status": "active"
+          },
+          "captures": { "file_id": "id" }
+        },
+        {
+          "op": "update_file_metadata",
+          "input": { "id": "{file_id}", "name": "final.md" }
+        },
+        {
+          "op": "get_file_metadata",
+          "input": { "id": "{file_id}" },
+          "expected": {
+            "result": {
+              "id": "{file_id}",
+              "name": "final.md",
+              "content_type": "text/markdown",
+              "owner_usr_id": "{owner}",
+              "scope": "org_0190f2a81b3c7abc8123000000000004",
+              "status": "active"
+            }
+          }
+        }
+      ]
+    }
+  ]
+}

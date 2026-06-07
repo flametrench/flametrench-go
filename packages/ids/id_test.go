@@ -196,7 +196,7 @@ func TestIsValidShape(t *testing.T) {
 func TestRegisteredPrefixesStable(t *testing.T) {
 	// Stable alphabetical order — matters for error messages.
 	got := RegisteredPrefixes()
-	want := []string{"aud", "cred", "inv", "mem", "mfa", "org", "pat", "ses", "shr", "tup", "usr"}
+	want := []string{"aud", "cred", "file", "flag", "inv", "mem", "mfa", "not", "org", "pat", "ses", "shr", "tup", "usr"}
 	if len(got) != len(want) {
 		t.Fatalf("RegisteredPrefixes() len = %d; want %d", len(got), len(want))
 	}
