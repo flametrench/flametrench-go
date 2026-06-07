@@ -25,6 +25,7 @@ type TenancyStore interface {
 	SuspendOrg(orgID string) (Organization, error)
 	ReinstateOrg(orgID string) (Organization, error)
 	RevokeOrg(orgID string) (Organization, error)
+	ListOrgs(opts ListOrgsOptions) (Page[Organization], error) // ADR 0025
 
 	// ─── Memberships ───
 
@@ -79,4 +80,12 @@ type ListInvitationsOptions struct {
 type AcceptInvitationOptions struct {
 	AsUsrID             *string
 	AcceptingIdentifier *string
+}
+
+// ListOrgsOptions is the input to TenancyStore.ListOrgs (ADR 0025).
+type ListOrgsOptions struct {
+	Cursor *string
+	Limit  int
+	Query  *string // case-insensitive substring over org name or slug
+	Status *Status // org-status filter; nil = all statuses
 }

@@ -243,11 +243,118 @@ func runTenancyStepCase(t *testing.T, c StepCase) {
 			_, err := store.UpdateOrg(orgID, in)
 			assertTenancyStepError(t, c.ID, stepLabel, expected, err)
 
+		case "suspend_org":
+			orgID := strField(input, "org_id")
+			_, err := store.SuspendOrg(orgID)
+			if !assertTenancyStepError(t, c.ID, stepLabel, expected, err) {
+				return
+			}
+
 		case "revoke_org":
 			orgID := strField(input, "org_id")
 			_, err := store.RevokeOrg(orgID)
 			if !assertTenancyStepError(t, c.ID, stepLabel, expected, err) {
 				return
+			}
+
+		case "list_orgs":
+			opts := tenancy.ListOrgsOptions{}
+			if v, ok := input["limit"].(float64); ok {
+				opts.Limit = int(v)
+			}
+			if s := strPtr(input, "cursor"); s != nil {
+				opts.Cursor = s
+			}
+			if s := strPtr(input, "status"); s != nil {
+				st := tenancy.Status(*s)
+				opts.Status = &st
+			}
+			if s := strPtr(input, "query"); s != nil {
+				opts.Query = s
+			}
+			page, err := store.ListOrgs(opts)
+			if !assertTenancyStepError(t, c.ID, stepLabel, expected, err) {
+				return
+			}
+			if err == nil {
+				// Capture next_cursor for multi-page tests.
+				for varName, path := range rawStep.Captures {
+					if path == "page.next_cursor" {
+						if page.NextCursor != nil {
+							captures[varName] = *page.NextCursor
+						}
+					}
+				}
+				// Validate expected result.
+				if res, ok := expected["result"].(map[string]any); ok {
+					// data_ids_in_order: ordered comparison.
+					if wantRaw, ok := res["data_ids_in_order"]; ok {
+						want := toStringSlice(wantRaw)
+						for i, w := range want {
+							if resolved, ok := resolveAny(w, captures).(string); ok {
+								want[i] = resolved
+							}
+						}
+						got := make([]string, len(page.Data))
+						for i, o := range page.Data {
+							got[i] = o.ID
+						}
+						if len(got) != len(want) {
+							t.Errorf("%s/%s: list_orgs data len = %d, want %d (got %v want %v)",
+								c.ID, stepLabel, len(got), len(want), got, want)
+						} else {
+							for i := range want {
+								if got[i] != want[i] {
+									t.Errorf("%s/%s: list_orgs data[%d] = %q, want %q",
+										c.ID, stepLabel, i, got[i], want[i])
+								}
+							}
+						}
+					}
+					// data_ids_unordered: set comparison.
+					if wantRaw, ok := res["data_ids_unordered"]; ok {
+						want := toStringSlice(wantRaw)
+						for i, w := range want {
+							if resolved, ok := resolveAny(w, captures).(string); ok {
+								want[i] = resolved
+							}
+						}
+						got := make([]string, len(page.Data))
+						for i, o := range page.Data {
+							got[i] = o.ID
+						}
+						wantSet := make(map[string]bool, len(want))
+						for _, w := range want {
+							wantSet[w] = true
+						}
+						gotSet := make(map[string]bool, len(got))
+						for _, g := range got {
+							gotSet[g] = true
+						}
+						if len(gotSet) != len(wantSet) {
+							t.Errorf("%s/%s: list_orgs unordered len = %d, want %d (got %v want %v)",
+								c.ID, stepLabel, len(gotSet), len(wantSet), got, want)
+						} else {
+							for w := range wantSet {
+								if !gotSet[w] {
+									t.Errorf("%s/%s: list_orgs missing id %q (got %v)", c.ID, stepLabel, w, got)
+								}
+							}
+						}
+					}
+					// next_cursor assertion.
+					if nc, ok := res["next_cursor"]; ok {
+						if nc == nil {
+							if page.NextCursor != nil {
+								t.Errorf("%s/%s: list_orgs next_cursor = %q, want null", c.ID, stepLabel, *page.NextCursor)
+							}
+						} else if s, ok := nc.(string); ok {
+							if page.NextCursor == nil {
+								t.Errorf("%s/%s: list_orgs next_cursor = null, want non-nil (%q)", c.ID, stepLabel, s)
+							}
+						}
+					}
+				}
 			}
 
 		case "create_invitation":
@@ -434,4 +541,8 @@ func TestSelfLeaveConformance(t *testing.T) {
 
 func TestTransferOwnershipConformance(t *testing.T) {
 	runTenancyFixture(t, filepath.Join("fixtures", "tenancy", "transfer-ownership.json"))
+}
+
+func TestListOrgsConformance(t *testing.T) {
+	runTenancyFixture(t, filepath.Join("fixtures", "tenancy", "list-orgs.json"))
 }

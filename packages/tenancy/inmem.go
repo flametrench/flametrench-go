@@ -211,6 +211,63 @@ func (s *InMemoryTenancyStore) transitionOrg(orgID string, to Status) (Organizat
 	return o, nil
 }
 
+func (s *InMemoryTenancyStore) ListOrgs(opts ListOrgsOptions) (Page[Organization], error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	limit := opts.Limit
+	if limit <= 0 {
+		limit = 50
+	}
+	var queryLower string
+	if opts.Query != nil {
+		queryLower = strings.ToLower(*opts.Query)
+	}
+	matched := make([]Organization, 0, len(s.orgs))
+	for _, o := range s.orgs {
+		if opts.Status != nil && o.Status != *opts.Status {
+			continue
+		}
+		if queryLower != "" {
+			nameMatch := o.Name != nil && strings.Contains(strings.ToLower(*o.Name), queryLower)
+			slugMatch := o.Slug != nil && strings.Contains(strings.ToLower(*o.Slug), queryLower)
+			if !nameMatch && !slugMatch {
+				continue
+			}
+		}
+		matched = append(matched, o)
+	}
+	// Sort by id ASC (UUIDv7 ≈ creation-time).
+	for i := 1; i < len(matched); i++ {
+		for j := i; j > 0; j-- {
+			if matched[j].ID < matched[j-1].ID {
+				matched[j-1], matched[j] = matched[j], matched[j-1]
+			} else {
+				break
+			}
+		}
+	}
+	startIdx := 0
+	if opts.Cursor != nil && *opts.Cursor != "" {
+		for i, o := range matched {
+			if o.ID == *opts.Cursor {
+				startIdx = i + 1
+				break
+			}
+		}
+	}
+	end := startIdx + limit
+	if end > len(matched) {
+		end = len(matched)
+	}
+	data := matched[startIdx:end]
+	var next *string
+	if end < len(matched) && len(data) > 0 {
+		c := data[len(data)-1].ID
+		next = &c
+	}
+	return Page[Organization]{Data: data, NextCursor: next}, nil
+}
+
 // ─── Memberships ───
 
 func (s *InMemoryTenancyStore) AddMember(orgID, usrID string, role Role, invitedBy *string) (Membership, error) {

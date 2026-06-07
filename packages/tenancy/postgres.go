@@ -280,6 +280,57 @@ func (s *PostgresTenancyStore) transOrg(orgID string, to Status) (Organization, 
 	return out, err
 }
 
+func (s *PostgresTenancyStore) ListOrgs(opts ListOrgsOptions) (Page[Organization], error) {
+	limit := opts.Limit
+	if limit <= 0 {
+		limit = 50
+	}
+	args := []any{}
+	q := `SELECT ` + orgCols + ` FROM org WHERE true`
+	idx := 1
+	if opts.Status != nil {
+		q += fmt.Sprintf(` AND status = $%d`, idx)
+		args = append(args, string(*opts.Status))
+		idx++
+	}
+	if opts.Query != nil && *opts.Query != "" {
+		q += fmt.Sprintf(` AND (name ILIKE $%d OR slug ILIKE $%d)`, idx, idx)
+		args = append(args, "%"+*opts.Query+"%")
+		idx++
+	}
+	if opts.Cursor != nil && *opts.Cursor != "" {
+		curU, err := wireToUUID(*opts.Cursor)
+		if err != nil {
+			return Page[Organization]{}, err
+		}
+		q += fmt.Sprintf(` AND id > $%d`, idx)
+		args = append(args, curU)
+		idx++
+	}
+	q += fmt.Sprintf(` ORDER BY id ASC LIMIT $%d`, idx)
+	args = append(args, limit+1)
+	rows, err := s.exec.Query(s.ctx, q, args...)
+	if err != nil {
+		return Page[Organization]{}, err
+	}
+	defer rows.Close()
+	out := make([]Organization, 0, limit)
+	for rows.Next() {
+		o, err := scanOrg(rows)
+		if err != nil {
+			return Page[Organization]{}, err
+		}
+		out = append(out, o)
+	}
+	var next *string
+	if len(out) > limit {
+		c := out[limit-1].ID
+		next = &c
+		out = out[:limit]
+	}
+	return Page[Organization]{Data: out, NextCursor: next}, nil
+}
+
 // ─── Memberships ───
 
 const memCols = `id, usr_id, org_id, role, status, replaces, invited_by, removed_by, created_at, updated_at`
