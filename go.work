@@ -7,5 +7,6 @@ use (
 	./packages/authz
 	./packages/audit
 	./packages/flags
+	./packages/file-metadata
 	./conformance
 )
