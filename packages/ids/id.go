@@ -58,11 +58,8 @@ var Types = map[string]string{
 	"shr": "share_token",
 	// v0.3 — ADR 0016
 	"pat": "personal_access_token",
-	// v0.4 — ADR 0019 / 0020 / 0021 / 0022
-	"aud":  "audit_event",
-	"file": "file_metadata",
-	"flag": "feature_flag",
-	"not":  "notification",
+	// v0.4 — ADR 0019
+	"aud": "audit_event",
 }
 
 // RegisteredPrefixes returns the registered type prefixes in a stable
