@@ -1,0 +1,260 @@
+{
+  "$schema": "../../fixture.schema.json",
+  "spec_version": "0.4.0",
+  "capability": "audit",
+  "operation": "write",
+  "conformance_level": "MUST",
+  "spec_section": "decisions/0019-audit-primitive.md#event-shape-normative",
+  "description": "Audit `write` durably stores the canonical AuditEvent shape (ADR 0019) and `get` reads it back verbatim. These are write→get round-trip vectors: they assert the PRIMITIVE'S structural invariants (opaque `action` stored verbatim; optional `auth`/`scope`/`on_behalf` preserved exactly as supplied or absent; `outcome` enum; `actor_usr_id` null vs non-null) WITHOUT depending on any per-operation emit semantics. The `action` string is supplied by the test (emitter-owned, opaque per ADR 0019) and asserted to round-trip unchanged — this is the `stores-and-filters-but-does-not-interpret` invariant, NOT a claim that any given operation emits that string. Matching for the `get` results is SUPERSET (result ⊇ expected): the expected object lists the fields whose values ADR 0019 pins; server-set fields (`recorded_at`, and `id` which is captured from `write`) and the `recorded_at >= occurred_at` ordering invariant are documented properties verified by per-SDK unit tests, not by these cross-SDK fixtures (per QA's `start-simple` ruling against a schema-validation expectation type). `runnable_today:false` until an SDK implements the audit layer.",
+  "tests": [
+    {
+      "id": "write.canonical_pat_on_behalf_success",
+      "description": "The canonical ADR 0019 example: a CLI agent acting under a PAT creates an adopter resource. Round-trips a success event carrying every optional axis at once — `auth.kind=pat` with a matching `pat_id`, `on_behalf.agent_id` (orthogonal to `auth`), an org `scope`, and the MCP protocol marker living ONLY in `metadata`. Asserts all of these are stored verbatim. `recorded_at` presence and `recorded_at >= occurred_at` are SDK-unit-test properties, not asserted here.",
+      "users": ["actor"],
+      "steps": [
+        {
+          "op": "write",
+          "input": {
+            "occurred_at": "2026-06-05T10:00:00.000Z",
+            "actor_usr_id": "{actor}",
+            "auth": { "kind": "pat", "pat_id": "pat_0190f2a81b3c7abc8123000000000003" },
+            "on_behalf": { "agent_id": "assistant-prod-7" },
+            "action": "data.create.record",
+            "target": { "kind": "doc", "id": "doc_2f9c1a00000000000000000000000001" },
+            "scope": { "kind": "org", "id": "org_0190f2a81b3c7abc8123000000000004" },
+            "outcome": "success",
+            "metadata": { "mcp": true },
+            "context": { "request_id": "req-abc123", "ip": "192.0.2.1" }
+          },
+          "captures": { "aud_id": "id" }
+        },
+        {
+          "op": "get",
+          "input": { "id": "{aud_id}" },
+          "expected": {
+            "result": {
+              "id": "{aud_id}",
+              "occurred_at": "2026-06-05T10:00:00.000Z",
+              "actor_usr_id": "{actor}",
+              "auth": { "kind": "pat", "pat_id": "pat_0190f2a81b3c7abc8123000000000003" },
+              "on_behalf": { "agent_id": "assistant-prod-7" },
+              "action": "data.create.record",
+              "target": { "kind": "doc", "id": "doc_2f9c1a00000000000000000000000001" },
+              "scope": { "kind": "org", "id": "org_0190f2a81b3c7abc8123000000000004" },
+              "outcome": "success",
+              "metadata": { "mcp": true }
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": "write.pre_auth_failed_login",
+      "description": "Pre-authentication failed-login event (ADR 0019 pre-auth example): no established principal. `actor_usr_id` is null; `auth` and `scope` are BOTH absent (the attempt established no principal and is not org-scoped); `outcome` is `failure`. The claimed-but-unverified identity may appear in `target`/`metadata` but is not an actor. Superset matching permits `auth`/`scope` absence; their REQUIRED absence for pre-auth is a documented invariant reinforced by SDK unit tests.",
+      "users": ["claimed"],
+      "steps": [
+        {
+          "op": "write",
+          "input": {
+            "occurred_at": "2026-06-05T10:01:00.000Z",
+            "actor_usr_id": null,
+            "action": "identity.login",
+            "target": { "kind": "usr", "id": "{claimed}" },
+            "outcome": "failure",
+            "metadata": { "reason": "bad_credential" },
+            "context": { "ip": "192.0.2.9" }
+          },
+          "captures": { "aud_id": "id" }
+        },
+        {
+          "op": "get",
+          "input": { "id": "{aud_id}" },
+          "expected": {
+            "result": {
+              "id": "{aud_id}",
+              "actor_usr_id": null,
+              "action": "identity.login",
+              "target": { "kind": "usr", "id": "{claimed}" },
+              "outcome": "failure",
+              "metadata": { "reason": "bad_credential" }
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": "write.system_actor",
+      "description": "A `system` actor (automation with no human owner) per ADR 0019 fulfilling ADR 0016's deferred `system` kind. `actor_usr_id` MUST be null and `auth.kind=system` carries an opaque adopter-defined `system_id`. Asserts the `system` kind and its matching id field round-trip; the action is a representative automation op (illustrative — ADR 0019 defines no canonical `system` op).",
+      "steps": [
+        {
+          "op": "write",
+          "input": {
+            "occurred_at": "2026-06-05T02:00:00.000Z",
+            "actor_usr_id": null,
+            "auth": { "kind": "system", "system_id": "billing-cron" },
+            "action": "tenancy.subscription_renewed",
+            "target": { "kind": "org", "id": "org_0190f2a81b3c7abc8123000000000004" },
+            "scope": { "kind": "org", "id": "org_0190f2a81b3c7abc8123000000000004" },
+            "outcome": "success",
+            "metadata": {}
+          },
+          "captures": { "aud_id": "id" }
+        },
+        {
+          "op": "get",
+          "input": { "id": "{aud_id}" },
+          "expected": {
+            "result": {
+              "id": "{aud_id}",
+              "actor_usr_id": null,
+              "auth": { "kind": "system", "system_id": "billing-cron" },
+              "action": "tenancy.subscription_renewed",
+              "target": { "kind": "org", "id": "org_0190f2a81b3c7abc8123000000000004" },
+              "scope": { "kind": "org", "id": "org_0190f2a81b3c7abc8123000000000004" },
+              "outcome": "success"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": "write.on_behalf_autonomous_agent_no_granting_human",
+      "description": "The orthogonality case from ADR 0019: an autonomous agent with no granting human. `on_behalf` co-occurs with `auth.kind=system` and `actor_usr_id: null` — demonstrating `on_behalf` is a DIFFERENT axis from `auth.kind` (it is not modeled as `auth.kind=agent`). Asserts `on_behalf.agent_id` and the `system` auth round-trip together. Any MCP protocol marker stays in `metadata`, never inside `on_behalf`.",
+      "steps": [
+        {
+          "op": "write",
+          "input": {
+            "occurred_at": "2026-06-05T11:00:00.000Z",
+            "actor_usr_id": null,
+            "auth": { "kind": "system", "system_id": "agent-runtime" },
+            "on_behalf": { "agent_id": "autonomous-summarizer-3" },
+            "action": "data.update.record",
+            "target": { "kind": "doc", "id": "doc_2f9c1a00000000000000000000000002" },
+            "scope": { "kind": "org", "id": "org_0190f2a81b3c7abc8123000000000004" },
+            "outcome": "success",
+            "metadata": { "mcp": true }
+          },
+          "captures": { "aud_id": "id" }
+        },
+        {
+          "op": "get",
+          "input": { "id": "{aud_id}" },
+          "expected": {
+            "result": {
+              "id": "{aud_id}",
+              "actor_usr_id": null,
+              "auth": { "kind": "system", "system_id": "agent-runtime" },
+              "on_behalf": { "agent_id": "autonomous-summarizer-3" },
+              "action": "data.update.record",
+              "outcome": "success",
+              "metadata": { "mcp": true }
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": "write.denied_outcome_authz_rejection",
+      "description": "A `denied` outcome — an authorization rejection — is recorded as a distinct value from `failure` (a fault). ADR 0019 `outcome` enum: a `denied` event is a policy decision. A session actor is denied an update; the event round-trips `outcome: denied` with a `session` auth and matching `session_id`. (Cross-scope denied non-disclosure is a separate fixture concern — this vector only pins the `denied` value and same-scope recording.)",
+      "users": ["actor"],
+      "steps": [
+        {
+          "op": "write",
+          "input": {
+            "occurred_at": "2026-06-05T12:00:00.000Z",
+            "actor_usr_id": "{actor}",
+            "auth": { "kind": "session", "session_id": "ses_0190f2a81b3c7abc8123000000000007" },
+            "action": "data.update.record",
+            "target": { "kind": "doc", "id": "doc_2f9c1a00000000000000000000000003" },
+            "scope": { "kind": "org", "id": "org_0190f2a81b3c7abc8123000000000004" },
+            "outcome": "denied",
+            "metadata": {}
+          },
+          "captures": { "aud_id": "id" }
+        },
+        {
+          "op": "get",
+          "input": { "id": "{aud_id}" },
+          "expected": {
+            "result": {
+              "id": "{aud_id}",
+              "actor_usr_id": "{actor}",
+              "auth": { "kind": "session", "session_id": "ses_0190f2a81b3c7abc8123000000000007" },
+              "action": "data.update.record",
+              "outcome": "denied"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": "write.adopter_target_opaque_id_not_decoded",
+      "description": "ADR 0019 dual id population: an adopter resource in `target` is referenced by an OPAQUE adopter string — `target.kind` is the adopter `object_type` (`^[a-z]{2,6}$`) and `target.id` is whatever shape the adopter uses (here a non-Flametrench, non-decodable id). The primitive MUST NOT prefix-validate or `decode` it. Asserts the opaque target round-trips verbatim; a successful write of a non-Flametrench `target.id` IS the assertion that no decode is enforced.",
+      "users": ["actor"],
+      "steps": [
+        {
+          "op": "write",
+          "input": {
+            "occurred_at": "2026-06-05T13:00:00.000Z",
+            "actor_usr_id": "{actor}",
+            "auth": { "kind": "session", "session_id": "ses_0190f2a81b3c7abc8123000000000008" },
+            "action": "proj.archive",
+            "target": { "kind": "proj", "id": "legacy-project-42" },
+            "scope": { "kind": "org", "id": "org_0190f2a81b3c7abc8123000000000004" },
+            "outcome": "success",
+            "metadata": {}
+          },
+          "captures": { "aud_id": "id" }
+        },
+        {
+          "op": "get",
+          "input": { "id": "{aud_id}" },
+          "expected": {
+            "result": {
+              "id": "{aud_id}",
+              "actor_usr_id": "{actor}",
+              "action": "proj.archive",
+              "target": { "kind": "proj", "id": "legacy-project-42" },
+              "outcome": "success"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": "write.pending_outcome_long_running_op",
+      "description": "The 4th `outcome` enum value: `pending` — a long-running/asynchronous operation that has started but is not yet resolved (ADR 0019). A terminal event (`success`/`failure`) is expected later; correlation is carried in `metadata`/`context`. Asserts the `pending` value round-trips. This event is NOT terminal — its presence does not imply the operation completed.",
+      "users": ["actor"],
+      "steps": [
+        {
+          "op": "write",
+          "input": {
+            "occurred_at": "2026-06-05T14:00:00.000Z",
+            "actor_usr_id": "{actor}",
+            "auth": { "kind": "session", "session_id": "ses_0190f2a81b3c7abc8123000000000009" },
+            "action": "data.import.started",
+            "target": { "kind": "job", "id": "import-job-7" },
+            "scope": { "kind": "org", "id": "org_0190f2a81b3c7abc8123000000000004" },
+            "outcome": "pending",
+            "metadata": { "correlation_id": "import-job-7" }
+          },
+          "captures": { "aud_id": "id" }
+        },
+        {
+          "op": "get",
+          "input": { "id": "{aud_id}" },
+          "expected": {
+            "result": {
+              "id": "{aud_id}",
+              "actor_usr_id": "{actor}",
+              "action": "data.import.started",
+              "target": { "kind": "job", "id": "import-job-7" },
+              "outcome": "pending",
+              "metadata": { "correlation_id": "import-job-7" }
+            }
+          }
+        }
+      ]
+    }
+  ]
+}
