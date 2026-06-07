@@ -7,6 +7,7 @@ require (
 	github.com/flametrench/flametrench-go/packages/authz v0.0.0-00010101000000-000000000000
 	github.com/flametrench/flametrench-go/packages/file-metadata v0.0.0-00010101000000-000000000000
 	github.com/flametrench/flametrench-go/packages/flags v0.0.0-00010101000000-000000000000
+	github.com/flametrench/flametrench-go/packages/notify v0.0.0-00010101000000-000000000000
 	github.com/flametrench/flametrench-go/packages/identity v0.0.0-00010101000000-000000000000
 	github.com/flametrench/flametrench-go/packages/ids v0.0.0-00010101000000-000000000000
 	github.com/flametrench/flametrench-go/packages/tenancy v0.0.0-00010101000000-000000000000
@@ -29,6 +30,7 @@ replace (
 	github.com/flametrench/flametrench-go/packages/authz => ../packages/authz
 	github.com/flametrench/flametrench-go/packages/file-metadata => ../packages/file-metadata
 	github.com/flametrench/flametrench-go/packages/flags => ../packages/flags
+	github.com/flametrench/flametrench-go/packages/notify => ../packages/notify
 	github.com/flametrench/flametrench-go/packages/identity => ../packages/identity
 	github.com/flametrench/flametrench-go/packages/ids => ../packages/ids
 	github.com/flametrench/flametrench-go/packages/tenancy => ../packages/tenancy

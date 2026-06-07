@@ -1,0 +1,229 @@
+{
+  "$schema": "../../fixture.schema.json",
+  "spec_version": "0.4.0",
+  "capability": "notifications",
+  "operation": "create_notification",
+  "conformance_level": "MUST",
+  "spec_section": "decisions/0022-notify-primitive.md#lifecycle-normative",
+  "description": "Notification create/get round-trips and the full read-state lifecycle machine (ADR 0022): created `unread`, `unread \u21c4 read` toggles both directions, `unread \u2192 dismissed` and `read \u2192 dismissed`. These are positive structural-invariant vectors: each creates a notification then transitions and re-reads it, asserting the stored shape and `state`. The `data` object is stored and returned VERBATIM (the primitive is a record/event store, NOT a delivery engine \u2014 it never renders or templates `data`); `type` and adopter `subject.id` are opaque. Matching for `get` results is SUPERSET (result \u2287 expected). `state_changed_at` is asserted by neither value nor monotonicity here \u2014 like audit `recorded_at`, the per-transition update is an SDK-unit-test property, not superset-expressible. FOLLOW-ONS (own vectors): the terminal-`dismissed` rejection (dismissed accepts no further transition) and recipient-scoping/non-inference (access strictly bound to `recipient_usr_id`) \u2014 the former needs the invalid-transition error name (house-uniform `PreconditionError`, pending confirmation it extends to notify), the latter couples to authenticated-caller state. `runnable_today:false` until an SDK implements the notifications layer. Per Option-2 (SDK-enforced recipient-scoping, ADR 0022), the per-notification ops (`get`/`markRead`/`markUnread`/`dismiss`) take the authenticated `recipient_usr_id` alongside `id`.",
+  "tests": [
+    {
+      "id": "create.full_shape_round_trip_unread",
+      "description": "A notification is created `unread` (ADR 0022). create \u2192 get round-trips the full Notification shape: scope, recipient, opaque `type`, `subject` (adopter id, opaque/not decoded), and the structured `data` object stored verbatim. `data` is plain record content, not a template \u2014 the primitive returns it byte-for-byte.",
+      "users": [
+        "recipient"
+      ],
+      "steps": [
+        {
+          "op": "create_notification",
+          "input": {
+            "scope": "org_0190f2a81b3c7abc8123000000000004",
+            "recipient_usr_id": "{recipient}",
+            "type": "comment.mention",
+            "subject": {
+              "kind": "doc",
+              "id": "doc_2f9c1a00000000000000000000000001"
+            },
+            "data": {
+              "actor_name": "Alice",
+              "snippet": "\u2026@bob take a look"
+            }
+          },
+          "captures": {
+            "not_id": "id"
+          }
+        },
+        {
+          "op": "get_notification",
+          "input": {
+            "recipient_usr_id": "{recipient}",
+            "id": "{not_id}"
+          },
+          "expected": {
+            "result": {
+              "id": "{not_id}",
+              "scope": "org_0190f2a81b3c7abc8123000000000004",
+              "recipient_usr_id": "{recipient}",
+              "type": "comment.mention",
+              "subject": {
+                "kind": "doc",
+                "id": "doc_2f9c1a00000000000000000000000001"
+              },
+              "data": {
+                "actor_name": "Alice",
+                "snippet": "\u2026@bob take a look"
+              },
+              "state": "unread"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": "mark_read_then_unread.toggles_both_directions",
+      "description": "`unread \u21c4 read` toggles in BOTH directions (ADR 0022): `markRead` moves unread\u2192read, `markUnread` moves read\u2192unread (a user re-flagging an item as unread is a real pattern). Asserts state after each toggle.",
+      "users": [
+        "recipient"
+      ],
+      "steps": [
+        {
+          "op": "create_notification",
+          "input": {
+            "scope": "org_0190f2a81b3c7abc8123000000000004",
+            "recipient_usr_id": "{recipient}",
+            "type": "invite.received",
+            "subject": {
+              "kind": "org",
+              "id": "org_0190f2a81b3c7abc8123000000000004"
+            },
+            "data": {}
+          },
+          "captures": {
+            "not_id": "id"
+          }
+        },
+        {
+          "op": "mark_read",
+          "input": {
+            "recipient_usr_id": "{recipient}",
+            "id": "{not_id}"
+          }
+        },
+        {
+          "op": "get_notification",
+          "input": {
+            "recipient_usr_id": "{recipient}",
+            "id": "{not_id}"
+          },
+          "expected": {
+            "result": {
+              "id": "{not_id}",
+              "state": "read"
+            }
+          }
+        },
+        {
+          "op": "mark_unread",
+          "input": {
+            "recipient_usr_id": "{recipient}",
+            "id": "{not_id}"
+          }
+        },
+        {
+          "op": "get_notification",
+          "input": {
+            "recipient_usr_id": "{recipient}",
+            "id": "{not_id}"
+          },
+          "expected": {
+            "result": {
+              "id": "{not_id}",
+              "state": "unread"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": "dismiss.from_unread",
+      "description": "`unread \u2192 dismissed` is a valid transition (ADR 0022: `read | unread \u2192 dismissed`). A user can dismiss a notification without first reading it. Asserts state:dismissed after dismiss directly from unread.",
+      "users": [
+        "recipient"
+      ],
+      "steps": [
+        {
+          "op": "create_notification",
+          "input": {
+            "scope": "org_0190f2a81b3c7abc8123000000000004",
+            "recipient_usr_id": "{recipient}",
+            "type": "job.finished",
+            "subject": {
+              "kind": "job",
+              "id": "export-job-9"
+            },
+            "data": {
+              "status": "complete"
+            }
+          },
+          "captures": {
+            "not_id": "id"
+          }
+        },
+        {
+          "op": "dismiss",
+          "input": {
+            "recipient_usr_id": "{recipient}",
+            "id": "{not_id}"
+          }
+        },
+        {
+          "op": "get_notification",
+          "input": {
+            "recipient_usr_id": "{recipient}",
+            "id": "{not_id}"
+          },
+          "expected": {
+            "result": {
+              "id": "{not_id}",
+              "state": "dismissed"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": "dismiss.from_read",
+      "description": "`read \u2192 dismissed` is a valid transition (ADR 0022). Asserts a notification marked read then dismissed reaches state:dismissed. (That `dismissed` is TERMINAL \u2014 accepts no further transition \u2014 is the negative vector, deferred pending the invalid-transition error name.)",
+      "users": [
+        "recipient"
+      ],
+      "steps": [
+        {
+          "op": "create_notification",
+          "input": {
+            "scope": "org_0190f2a81b3c7abc8123000000000004",
+            "recipient_usr_id": "{recipient}",
+            "type": "approval.requested",
+            "subject": {
+              "kind": "doc",
+              "id": "doc_2f9c1a00000000000000000000000002"
+            },
+            "data": {
+              "requester": "Carol"
+            }
+          },
+          "captures": {
+            "not_id": "id"
+          }
+        },
+        {
+          "op": "mark_read",
+          "input": {
+            "recipient_usr_id": "{recipient}",
+            "id": "{not_id}"
+          }
+        },
+        {
+          "op": "dismiss",
+          "input": {
+            "recipient_usr_id": "{recipient}",
+            "id": "{not_id}"
+          }
+        },
+        {
+          "op": "get_notification",
+          "input": {
+            "recipient_usr_id": "{recipient}",
+            "id": "{not_id}"
+          },
+          "expected": {
+            "result": {
+              "id": "{not_id}",
+              "state": "dismissed"
+            }
+          }
+        }
+      ]
+    }
+  ]
+}

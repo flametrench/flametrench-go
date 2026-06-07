@@ -8,5 +8,6 @@ use (
 	./packages/audit
 	./packages/flags
 	./packages/file-metadata
+	./packages/notify
 	./conformance
 )

@@ -1,0 +1,136 @@
+{
+  "$schema": "../../fixture.schema.json",
+  "spec_version": "0.4.0",
+  "capability": "notifications",
+  "operation": "get_notification",
+  "conformance_level": "MUST",
+  "spec_section": "decisions/0022-notify-primitive.md#access--strictly-recipient-scoped-sdk-enforced-normative",
+  "description": "Recipient-scoping is SDK-ENFORCED (ADR 0022 Option 2, \u00a7Access + \u00a7Errors): every per-notification operation takes the authenticated `recipient_usr_id` and the SDK MUST constrain the lookup to it. A caller who is not the recipient cannot reach a notification by id \u2014 `get_notification` with a non-matching `recipient_usr_id` resolves to the SAME not-found error (`NotFoundError`) as a genuinely non-existent id: no cross-recipient read path, no forbidden/denied differential (the existence-non-disclosure rule). This is the IDOR-closing vector that makes the recipient-scope guarantee conformance-enforced across all five SDKs (the `get`-vs-`list` asymmetry an adopter-gated model leaks). `runnable_today:false` until the notifications layer ships with the Option-2 (recipient-scoped) signatures.",
+  "tests": [
+    {
+      "id": "recipient_scope.cross_recipient_get_is_not_found",
+      "description": "A notification owned by `recipient` is unreachable by `intruder`: `get_notification(recipient_usr_id={intruder}, id={not_id})` MUST raise `NotFoundError` \u2014 the SDK scopes the lookup to the supplied recipient, so a foreign caller is denied as if the notification did not exist (no cross-recipient read path).",
+      "users": [
+        "recipient",
+        "intruder"
+      ],
+      "steps": [
+        {
+          "op": "create_notification",
+          "input": {
+            "scope": "org_0190f2a81b3c7abc8123000000000004",
+            "recipient_usr_id": "{recipient}",
+            "type": "comment.mention",
+            "subject": {
+              "kind": "doc",
+              "id": "doc_2f9c1a00000000000000000000000001"
+            },
+            "data": {}
+          },
+          "captures": {
+            "not_id": "id"
+          }
+        },
+        {
+          "op": "get_notification",
+          "input": {
+            "recipient_usr_id": "{intruder}",
+            "id": "{not_id}"
+          },
+          "expected": {
+            "error": "NotFoundError"
+          }
+        }
+      ]
+    },
+    {
+      "id": "recipient_scope.foreign_and_nonexistent_are_indistinguishable",
+      "description": "Existence non-disclosure: `get_notification` by `intruder` on a real-but-foreign id AND by `intruder` on a genuinely non-existent id BOTH raise the SAME `NotFoundError` \u2014 no error-code/message differential that would let `intruder` infer whether the foreign notification exists.",
+      "users": [
+        "recipient",
+        "intruder"
+      ],
+      "steps": [
+        {
+          "op": "create_notification",
+          "input": {
+            "scope": "org_0190f2a81b3c7abc8123000000000004",
+            "recipient_usr_id": "{recipient}",
+            "type": "comment.mention",
+            "subject": {
+              "kind": "doc",
+              "id": "doc_2f9c1a00000000000000000000000001"
+            },
+            "data": {}
+          },
+          "captures": {
+            "not_id": "id"
+          }
+        },
+        {
+          "op": "get_notification",
+          "input": {
+            "recipient_usr_id": "{intruder}",
+            "id": "{not_id}"
+          },
+          "expected": {
+            "error": "NotFoundError"
+          }
+        },
+        {
+          "op": "get_notification",
+          "input": {
+            "recipient_usr_id": "{intruder}",
+            "id": "not_0190f2a81b3c7abc8123ffffffffffff"
+          },
+          "expected": {
+            "error": "NotFoundError"
+          }
+        }
+      ]
+    },
+    {
+      "id": "recipient_scope.dismiss_foreign_already_dismissed_is_not_found",
+      "description": "Existence-before-state PRECEDENCE (ADR 0022 \u00a7Errors / #59): a `dismiss` by `intruder` on a notification owned by `recipient` that is already `dismissed` MUST raise `NotFoundError` \u2014 the recipient/ownership check resolves FIRST. It MUST NOT raise the terminal-state `PreconditionError`, which would leak both the foreign notification's existence AND its dismissed state. This is the mutation-path half of recipient non-disclosure (the read path is covered above) and the most-likely-mis-implemented case (a naive `dismiss` checks terminal-state before ownership).",
+      "users": [
+        "recipient",
+        "intruder"
+      ],
+      "steps": [
+        {
+          "op": "create_notification",
+          "input": {
+            "scope": "org_0190f2a81b3c7abc8123000000000004",
+            "recipient_usr_id": "{recipient}",
+            "type": "comment.mention",
+            "subject": {
+              "kind": "doc",
+              "id": "doc_2f9c1a00000000000000000000000001"
+            },
+            "data": {}
+          },
+          "captures": {
+            "not_id": "id"
+          }
+        },
+        {
+          "op": "dismiss",
+          "input": {
+            "recipient_usr_id": "{recipient}",
+            "id": "{not_id}"
+          }
+        },
+        {
+          "op": "dismiss",
+          "input": {
+            "recipient_usr_id": "{intruder}",
+            "id": "{not_id}"
+          },
+          "expected": {
+            "error": "NotFoundError"
+          }
+        }
+      ]
+    }
+  ]
+}
