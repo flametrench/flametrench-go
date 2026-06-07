@@ -77,7 +77,7 @@ func TestKeyConflict(t *testing.T) {
 	s := newTestStore(t)
 	s.CreateFlag(CreateFlagInput{Scope: testScope, Key: "unique"})
 	_, err := s.CreateFlag(CreateFlagInput{Scope: testScope, Key: "unique"})
-	if !IsPreconditionError(err) {
+	if !IsPrecondition(err) {
 		t.Errorf("duplicate key: want PreconditionError, got %v", err)
 	}
 }

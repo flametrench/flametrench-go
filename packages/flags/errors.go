@@ -37,8 +37,8 @@ func (e *PreconditionError) Error() string {
 	return fmt.Sprintf("flags: precondition failed: %s", e.Reason)
 }
 
-// IsPreconditionError reports whether err is or wraps a PreconditionError.
-func IsPreconditionError(err error) bool {
+// IsPrecondition reports whether err is or wraps a PreconditionError.
+func IsPrecondition(err error) bool {
 	var e *PreconditionError
 	return errors.As(err, &e)
 }
