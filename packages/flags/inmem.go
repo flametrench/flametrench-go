@@ -108,7 +108,7 @@ func (s *InMemoryFlagsStore) CreateFlag(in CreateFlagInput) (Flag, error) {
 
 	scopeKey := in.Scope + "#" + in.Key
 	if _, exists := s.byKey[scopeKey]; exists {
-		return Flag{}, ErrKeyConflict
+		return Flag{}, &PreconditionError{Reason: "flag key already exists in scope"}
 	}
 
 	id, err := ids.Generate("flag")

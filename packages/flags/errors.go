@@ -10,10 +10,6 @@ import (
 // ErrNotFound is returned when a flag lookup finds no matching record.
 var ErrNotFound = errors.New("flag not found")
 
-// ErrKeyConflict is returned when creating a flag whose key already exists
-// within the requested scope.
-var ErrKeyConflict = errors.New("flag key already exists in scope")
-
 // InvalidFormatError is returned when an input field fails a structural or
 // value constraint (ADR 0021 §"Constraints").
 type InvalidFormatError struct {
@@ -28,5 +24,21 @@ func (e *InvalidFormatError) Error() string {
 // IsInvalidFormat reports whether err is or wraps an InvalidFormatError.
 func IsInvalidFormat(err error) bool {
 	var e *InvalidFormatError
+	return errors.As(err, &e)
+}
+
+// PreconditionError is returned for state/constraint violations such as a
+// duplicate (scope, key) on create (ADR 0019 uniform error taxonomy).
+type PreconditionError struct {
+	Reason string
+}
+
+func (e *PreconditionError) Error() string {
+	return fmt.Sprintf("flags: precondition failed: %s", e.Reason)
+}
+
+// IsPreconditionError reports whether err is or wraps a PreconditionError.
+func IsPreconditionError(err error) bool {
+	var e *PreconditionError
 	return errors.As(err, &e)
 }
