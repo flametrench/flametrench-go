@@ -4,6 +4,13 @@ All notable changes to `github.com/flametrench/flametrench-go` are recorded here
 
 This is the **5th SDK family** in the Flametrench matrix, added at v0.3.0 per [ADR 0018](https://github.com/flametrench/spec/blob/main/decisions/0018-go-sdk-family-addition.md).
 
+## [packages/tenancy/v0.4.0] — 2026-06-07
+
+### Added
+
+- `TenancyStore.ListOrgs(ListOrgsOptions) (Page[Organization], error)` — cross-org enumeration primitive ([ADR 0025](https://github.com/flametrench/spec/blob/main/decisions/0025-list-orgs.md)). System-level cursor-paginated read ordered by `id` ASC. Supports `status` filter (`active`/`suspended`/`revoked`) and case-insensitive `query` substring over org `name` and `slug`. Backwards-compatible addition; no existing operations changed.
+- 8 conformance cases from `spec/conformance/fixtures/tenancy/list-orgs.json` wired and passing.
+
 ## [v0.3.2] — 2026-06-05
 
 ### Changed
