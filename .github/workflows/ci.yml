@@ -33,7 +33,7 @@ jobs:
 
       - name: Build all packages
         run: |
-          for m in packages/ids packages/identity packages/tenancy packages/authz packages/audit packages/flags packages/file-metadata conformance; do
+          for m in packages/ids packages/identity packages/tenancy packages/authz packages/audit packages/flags packages/file-metadata packages/notify conformance; do
             (cd "$m" && go build ./...) || exit 1
           done
 
@@ -65,12 +65,16 @@ jobs:
         working-directory: packages/file-metadata
         run: go test -race -v ./...
 
+      - name: Test packages/notify
+        working-directory: packages/notify
+        run: go test -race -v ./...
+
       - name: Test conformance suite
         working-directory: conformance
         run: go test -race -v ./...
 
       - name: Lint (vet)
         run: |
-          for m in packages/ids packages/identity packages/tenancy packages/authz packages/audit packages/flags packages/file-metadata conformance; do
+          for m in packages/ids packages/identity packages/tenancy packages/authz packages/audit packages/flags packages/file-metadata packages/notify conformance; do
             (cd "$m" && go vet ./...) || exit 1
           done
