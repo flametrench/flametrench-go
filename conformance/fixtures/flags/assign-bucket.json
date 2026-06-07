@@ -1,0 +1,53 @@
+{
+  "$schema": "../../fixture.schema.json",
+  "spec_version": "0.4.0",
+  "capability": "flags",
+  "operation": "assign_bucket",
+  "conformance_level": "MUST",
+  "spec_section": "decisions/0021-flags-primitive.md#deterministic-bucketing-normative--pinned-for-cross-sdk-identity",
+  "description": "Deterministic percentage-rollout bucketing: bucket = uint32_be(SHA-256(utf8(key) || 0x00 || utf8(subject_id))[0..4]) mod 10000. subject_id is the FULL wire-format id string (e.g. usr_<32hex>), UTF-8 — not bare hex, not the hyphenated UUID, not decoded bytes. An SDK feeding any other byte representation produces a different number and fails these vectors. Values independently cross-verified against the ratified ADR 0021 definition.",
+  "tests": [
+    {
+      "id": "bucket.new-checkout.usr-0002",
+      "description": "Canonical vector: key 'new-checkout' + a usr wire-string subject lands in bucket 9557.",
+      "input": { "key": "new-checkout", "subject_id": "usr_0190f2a81b3c7abc8123000000000002" },
+      "expected": { "result": 9557 }
+    },
+    {
+      "id": "bucket.new-checkout.usr-0099",
+      "description": "Same key, different subject lands in a different bucket (6848) — the bucket is a function of both key and subject.",
+      "input": { "key": "new-checkout", "subject_id": "usr_0190f2a81b3c7abc8123000000000099" },
+      "expected": { "result": 6848 }
+    },
+    {
+      "id": "bucket.dark-mode.usr-0002",
+      "description": "Same subject, different key lands in a different bucket (2859) — the key domain-separates the hash.",
+      "input": { "key": "dark-mode", "subject_id": "usr_0190f2a81b3c7abc8123000000000002" },
+      "expected": { "result": 2859 }
+    },
+    {
+      "id": "bucket.empty-key.usr-0002",
+      "description": "An empty key is valid input and is hashed as the empty string, NUL-separated from the subject (bucket 1263). Guards the NUL-separator handling.",
+      "input": { "key": "", "subject_id": "usr_0190f2a81b3c7abc8123000000000002" },
+      "expected": { "result": 1263 }
+    },
+    {
+      "id": "bucket.beta-gate.org-0004",
+      "description": "A non-usr subject (org wire string) buckets identically by the same rule (bucket 9985) — subject_id is treated as an opaque wire string regardless of its prefix.",
+      "input": { "key": "beta-gate", "subject_id": "org_0190f2a81b3c7abc8123000000000004" },
+      "expected": { "result": 9985 }
+    },
+    {
+      "id": "bucket.determinism.repeat",
+      "description": "Bucketing is deterministic and sticky: the same (key, subject_id) yields the same bucket as bucket.new-checkout.usr-0002 — no per-call variation.",
+      "input": { "key": "new-checkout", "subject_id": "usr_0190f2a81b3c7abc8123000000000002" },
+      "expected": { "result": 9557 }
+    },
+    {
+      "id": "bucket.range.upper-bound",
+      "description": "Buckets are basis points in [0, 9999]; 9985 (beta-gate/org-0004) confirms values near the top of the range are produced as-is, never clamped or wrapped past 9999.",
+      "input": { "key": "beta-gate", "subject_id": "org_0190f2a81b3c7abc8123000000000004" },
+      "expected": { "result": 9985 }
+    }
+  ]
+}
