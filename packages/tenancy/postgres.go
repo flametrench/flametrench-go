@@ -1201,10 +1201,12 @@ func (s *PostgresTenancyStore) RevokeInvitation(invID, adminUsrID string) (Invit
 		// is an admin of the org). Same check as AdminRemove: an ACTIVE
 		// owner/admin membership in the invitation's org. Checked before
 		// the status so a caller without authority learns nothing about
-		// the invitation's state.
+		// the invitation's state. FOR SHARE holds the acting membership
+		// until commit, so a concurrent suspend/remove/role change of the
+		// revoker cannot interleave with the revoke.
 		var adminRole Role
 		err = tx.QueryRow(s.ctx,
-			`SELECT role FROM mem WHERE org_id = $1 AND usr_id = $2 AND status = 'active'`,
+			`SELECT role FROM mem WHERE org_id = $1 AND usr_id = $2 AND status = 'active' FOR SHARE`,
 			orgU, adminU,
 		).Scan(&adminRole)
 		if errors.Is(err, pgx.ErrNoRows) {
