@@ -10,6 +10,7 @@ package authz
 
 import (
 	"context"
+	"errors"
 	"os"
 	"strings"
 	"testing"
@@ -102,5 +103,85 @@ func TestPostgresShareSuite(t *testing.T) {
 			authzSeedUsr(t, pool, ctx, wireID)
 		}
 		return store, seed, func() {}
+	})
+}
+
+// docs/shares.md §Validation (ADR 0012): created_by MUST resolve to a
+// non-revoked usr. Postgres-only: the in-memory share store has no usr
+// registry to consult.
+func TestPostgresShareCreatedByStatus(t *testing.T) {
+	url := os.Getenv("FT_GO_POSTGRES_URL")
+	if url == "" {
+		t.Skip("FT_GO_POSTGRES_URL not set; skipping Postgres suite")
+	}
+	ctx := context.Background()
+	pool, err := pgxpool.New(ctx, url)
+	if err != nil {
+		t.Skipf("pgxpool.New: %v", err)
+	}
+	defer pool.Close()
+	if err := pool.Ping(ctx); err != nil {
+		t.Skipf("ping: %v", err)
+	}
+
+	setStatus := func(t *testing.T, wireID, status string) {
+		t.Helper()
+		u, err := wireToUUID(wireID)
+		if err != nil {
+			t.Fatalf("wireToUUID: %v", err)
+		}
+		if _, err := pool.Exec(ctx, `UPDATE usr SET status = $2 WHERE id = $1`, u, status); err != nil {
+			t.Fatalf("set status: %v", err)
+		}
+	}
+	create := func(s ShareStore, createdBy string) error {
+		_, err := s.CreateShare(CreateShareInput{
+			ObjectType: "doc", ObjectID: objID("doc", 1), Relation: "viewer",
+			CreatedBy: createdBy, ExpiresInSeconds: 3600,
+		})
+		return err
+	}
+
+	t.Run("revoked_creator_refused_creates_nothing", func(t *testing.T) {
+		authzTruncate(t, pool, ctx)
+		s := NewPostgresShareStore(ctx, pool)
+		creator := usrID(1)
+		authzSeedUsr(t, pool, ctx, creator)
+		setStatus(t, creator, "revoked")
+		err := create(s, creator)
+		var pe *PreconditionError
+		if !errors.As(err, &pe) || pe.Reason != "creator_revoked" {
+			t.Fatalf("err = %v; want PreconditionError(creator_revoked)", err)
+		}
+		page, err := s.ListSharesForObject("doc", objID("doc", 1), ListSharesOptions{})
+		if err != nil {
+			t.Fatalf("ListSharesForObject: %v", err)
+		}
+		if len(page.Data) != 0 {
+			t.Errorf("refused CreateShare left %d shares", len(page.Data))
+		}
+	})
+
+	t.Run("active_creator_ok", func(t *testing.T) {
+		authzTruncate(t, pool, ctx)
+		s := NewPostgresShareStore(ctx, pool)
+		creator := usrID(1)
+		authzSeedUsr(t, pool, ctx, creator)
+		if err := create(s, creator); err != nil {
+			t.Errorf("CreateShare: %v", err)
+		}
+	})
+
+	t.Run("suspended_creator_still_allowed", func(t *testing.T) {
+		// Out of scope for this change: shares.md says SHOULD for
+		// suspended creators, pending a spec clarification.
+		authzTruncate(t, pool, ctx)
+		s := NewPostgresShareStore(ctx, pool)
+		creator := usrID(1)
+		authzSeedUsr(t, pool, ctx, creator)
+		setStatus(t, creator, "suspended")
+		if err := create(s, creator); err != nil {
+			t.Errorf("CreateShare: %v", err)
+		}
 	})
 }

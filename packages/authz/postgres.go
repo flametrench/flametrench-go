@@ -491,13 +491,35 @@ func (s *PostgresShareStore) CreateShare(in CreateShareInput) (CreateShareResult
 	newID := uuid.Must(uuid.NewV7())
 	expiresAt := s.clock().Add(time.Duration(in.ExpiresInSeconds) * time.Second)
 	var sh Share
-	err = s.exec.QueryRow(s.ctx, `
+	tx, err := s.exec.Begin(s.ctx)
+	if err != nil {
+		return CreateShareResult{}, fmt.Errorf("begin tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback(s.ctx) }()
+	// docs/shares.md §Validation (ADR 0012): created_by MUST resolve to a
+	// non-revoked usr. FOR SHARE serializes against a concurrent revoke
+	// (which locks the usr row FOR UPDATE).
+	var creatorStatus string
+	err = tx.QueryRow(s.ctx, `SELECT status FROM usr WHERE id = $1 FOR SHARE`, createdByU).Scan(&creatorStatus)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return CreateShareResult{}, &PreconditionError{Msg: fmt.Sprintf("created_by %s does not exist", in.CreatedBy), Reason: "creator_not_found"}
+	}
+	if err != nil {
+		return CreateShareResult{}, err
+	}
+	if creatorStatus == "revoked" {
+		return CreateShareResult{}, &PreconditionError{Msg: fmt.Sprintf("created_by %s is revoked", in.CreatedBy), Reason: "creator_revoked"}
+	}
+	err = tx.QueryRow(s.ctx, `
 		INSERT INTO shr (id, object_type, object_id, relation, created_by, token_hash, expires_at, single_use)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
 		RETURNING id, expires_at, single_use, consumed_at, revoked_at, created_at`,
 		newID, in.ObjectType, objU, in.Relation, createdByU, hashBytes, expiresAt, in.SingleUse,
 	).Scan(&newID, &sh.ExpiresAt, &sh.SingleUse, &sh.ConsumedAt, &sh.RevokedAt, &sh.CreatedAt)
 	if err != nil {
+		return CreateShareResult{}, err
+	}
+	if err := tx.Commit(s.ctx); err != nil {
 		return CreateShareResult{}, err
 	}
 	sh.ID = uuidToWire("shr", newID)
