@@ -788,6 +788,18 @@ func (s *InMemoryTenancyStore) RevokeInvitation(invID, adminUsrID string) (Invit
 	if !ok {
 		return Invitation{}, fmt.Errorf("inv %s: %w", invID, ErrNotFound)
 	}
+	// docs/tenancy.md §Invitations: revokeInvitation is subject to admin
+	// authorization on the invitation's own org (ADR 0003: actor is an
+	// admin of the org). Same check as AdminRemove: an ACTIVE owner/admin
+	// membership in inv.OrgID. Checked before the status so a caller
+	// without authority learns nothing about the invitation's state.
+	adminMemID, ok := s.activeMemByOrgUsr[orgUsrKey(inv.OrgID, adminUsrID)]
+	if !ok {
+		return Invitation{}, fmt.Errorf("revoker not a member: %w", ErrForbidden)
+	}
+	if s.memberships[adminMemID].Role.AdminRank() < 3 {
+		return Invitation{}, ErrForbidden
+	}
 	if inv.Status != InvitationStatusPending {
 		return Invitation{}, ErrInvitationNotPending
 	}

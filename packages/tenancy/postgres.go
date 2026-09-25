@@ -1185,16 +1185,52 @@ func (s *PostgresTenancyStore) RevokeInvitation(invID, adminUsrID string) (Invit
 		return Invitation{}, err
 	}
 	now := s.clock()
-	row := s.exec.QueryRow(s.ctx, `
-		UPDATE inv SET status = 'revoked', terminal_at = $2, terminal_by = $3
-		WHERE id = $1 AND status = 'pending'
-		RETURNING `+invCols, u, now, adminU,
-	)
-	inv, err := scanInvitation(row)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return Invitation{}, ErrInvitationNotPending
-	}
-	return inv, err
+	var out Invitation
+	err = s.inTx(func(tx pgx.Tx) error {
+		var orgU uuid.UUID
+		var status InvitationStatus
+		err := tx.QueryRow(s.ctx, `SELECT org_id, status FROM inv WHERE id = $1 FOR UPDATE`, u).Scan(&orgU, &status)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return fmt.Errorf("inv %s: %w", invID, ErrNotFound)
+		}
+		if err != nil {
+			return err
+		}
+		// docs/tenancy.md §Invitations: revokeInvitation is subject to
+		// admin authorization on the invitation's own org (ADR 0003: actor
+		// is an admin of the org). Same check as AdminRemove: an ACTIVE
+		// owner/admin membership in the invitation's org. Checked before
+		// the status so a caller without authority learns nothing about
+		// the invitation's state.
+		var adminRole Role
+		err = tx.QueryRow(s.ctx,
+			`SELECT role FROM mem WHERE org_id = $1 AND usr_id = $2 AND status = 'active'`,
+			orgU, adminU,
+		).Scan(&adminRole)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return fmt.Errorf("revoker not a member: %w", ErrForbidden)
+		}
+		if err != nil {
+			return err
+		}
+		if adminRole.AdminRank() < 3 {
+			return ErrForbidden
+		}
+		if status != InvitationStatusPending {
+			return ErrInvitationNotPending
+		}
+		row := tx.QueryRow(s.ctx, `
+			UPDATE inv SET status = 'revoked', terminal_at = $2, terminal_by = $3
+			WHERE id = $1 AND status = 'pending'
+			RETURNING `+invCols, u, now, adminU,
+		)
+		out, err = scanInvitation(row)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return ErrInvitationNotPending
+		}
+		return err
+	})
+	return out, err
 }
 
 // ─── Tuple accessors ───

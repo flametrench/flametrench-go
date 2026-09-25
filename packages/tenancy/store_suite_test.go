@@ -622,6 +622,111 @@ func testInvitations(t *testing.T, newStore storeFactory) {
 		if got.Status != InvitationStatusRevoked {
 			t.Errorf("status = %q", got.Status)
 		}
+		if got.TerminalBy == nil || *got.TerminalBy != owner {
+			t.Errorf("terminal_by = %v; want %s", got.TerminalBy, owner)
+		}
+	})
+
+	// revokeInvitation requires an ACTIVE owner/admin membership in the
+	// invitation's own org. Every refusal must leave the invitation
+	// pending with no terminal fields set.
+	t.Run("Revoke_unauthorized_forbidden_leaves_pending", func(t *testing.T) {
+		cases := []struct {
+			name  string
+			setup func(t *testing.T, s TenancyStore, seed func(*testing.T, string), orgID string) string
+		}{
+			{"non_member", func(t *testing.T, s TenancyStore, seed func(*testing.T, string), orgID string) string {
+				u := genUsrID(10)
+				seed(t, u)
+				return u
+			}},
+			{"plain_member", func(t *testing.T, s TenancyStore, seed func(*testing.T, string), orgID string) string {
+				u := genUsrID(11)
+				seed(t, u)
+				if _, err := s.AddMember(orgID, u, RoleMember, nil); err != nil {
+					t.Fatalf("AddMember: %v", err)
+				}
+				return u
+			}},
+			{"owner_of_other_org", func(t *testing.T, s TenancyStore, seed func(*testing.T, string), orgID string) string {
+				u := genUsrID(12)
+				seed(t, u)
+				if _, err := s.CreateOrg(u, CreateOrgOptions{}); err != nil {
+					t.Fatalf("CreateOrg: %v", err)
+				}
+				return u
+			}},
+			{"suspended_admin_membership", func(t *testing.T, s TenancyStore, seed func(*testing.T, string), orgID string) string {
+				u := genUsrID(13)
+				seed(t, u)
+				m, err := s.AddMember(orgID, u, RoleAdmin, nil)
+				if err != nil {
+					t.Fatalf("AddMember: %v", err)
+				}
+				if _, err := s.SuspendMembership(m.ID); err != nil {
+					t.Fatalf("SuspendMembership: %v", err)
+				}
+				return u
+			}},
+		}
+		for _, c := range cases {
+			t.Run(c.name, func(t *testing.T) {
+				s, seed, done := newStore(t)
+				defer done()
+				owner := genUsrID(1)
+				seed(t, owner)
+				r, _ := s.CreateOrg(owner, CreateOrgOptions{})
+				exp := time.Now().UTC().Add(24 * time.Hour)
+				inv, err := s.CreateInvitation(r.Org.ID, "alice@example.com", RoleMember, owner, exp, nil)
+				if err != nil {
+					t.Fatalf("CreateInvitation: %v", err)
+				}
+				caller := c.setup(t, s, seed, r.Org.ID)
+				if _, err := s.RevokeInvitation(inv.ID, caller); !errors.Is(err, ErrForbidden) {
+					t.Fatalf("err = %v; want ErrForbidden", err)
+				}
+				got, err := s.GetInvitation(inv.ID)
+				if err != nil {
+					t.Fatalf("GetInvitation: %v", err)
+				}
+				if got.Status != InvitationStatusPending || got.TerminalAt != nil || got.TerminalBy != nil {
+					t.Errorf("refused revoke changed invitation: status=%q terminal_at=%v terminal_by=%v",
+						got.Status, got.TerminalAt, got.TerminalBy)
+				}
+			})
+		}
+	})
+
+	t.Run("Revoke_by_admin_succeeds", func(t *testing.T) {
+		s, seed, done := newStore(t)
+		defer done()
+		owner := genUsrID(1)
+		admin := genUsrID(2)
+		seed(t, owner)
+		seed(t, admin)
+		r, _ := s.CreateOrg(owner, CreateOrgOptions{})
+		if _, err := s.AddMember(r.Org.ID, admin, RoleAdmin, nil); err != nil {
+			t.Fatalf("AddMember: %v", err)
+		}
+		exp := time.Now().UTC().Add(24 * time.Hour)
+		inv, _ := s.CreateInvitation(r.Org.ID, "alice@example.com", RoleMember, owner, exp, nil)
+		got, err := s.RevokeInvitation(inv.ID, admin)
+		if err != nil {
+			t.Fatalf("RevokeInvitation: %v", err)
+		}
+		if got.Status != InvitationStatusRevoked || got.TerminalBy == nil || *got.TerminalBy != admin {
+			t.Errorf("status=%q terminal_by=%v; want revoked by %s", got.Status, got.TerminalBy, admin)
+		}
+	})
+
+	t.Run("Revoke_unknown_invitation_not_found", func(t *testing.T) {
+		s, seed, done := newStore(t)
+		defer done()
+		owner := genUsrID(1)
+		seed(t, owner)
+		if _, err := s.RevokeInvitation("inv_00000000000000000000000000000001", owner); !errors.Is(err, ErrNotFound) {
+			t.Errorf("err = %v; want ErrNotFound", err)
+		}
 	})
 }
 
