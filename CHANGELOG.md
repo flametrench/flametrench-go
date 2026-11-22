@@ -4,6 +4,12 @@ All notable changes to `github.com/flametrench/flametrench-go` are recorded here
 
 This is the **5th SDK family** in the Flametrench matrix, added at v0.3.0 per [ADR 0018](https://github.com/flametrench/spec/blob/main/decisions/0018-go-sdk-family-addition.md).
 
+## [packages/tenancy/v0.5.0] — 2026-11-22
+
+### Changed
+- **Behaviour change:** `RevokeInvitation` now returns `ErrForbidden` unless the caller holds an **active** `owner` or `admin` membership in the invitation's org (docs/tenancy.md §Invitations; ADR 0003). A refused call leaves the invitation unchanged. Callers that revoked invitations in other orgs will now get `Forbidden`.
+- **Note:** cleanup and automated callers (expiry and clean-up jobs) use `revokeInvitationAsSystem`, for server-side callers only. That method is added by the system-path change and is in this release only once that PR merges.
+
 ## [packages/tenancy/v0.4.0] — 2026-06-07
 
 ### Added
