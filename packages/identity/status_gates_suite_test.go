@@ -61,8 +61,16 @@ func testTotpReplay(t *testing.T, newStore storeFactory) {
 		if _, err := s.VerifyMfa(u.ID, MfaProof{Totp: &TotpProof{Code: next}}); err != nil {
 			t.Fatalf("first VerifyMfa: %v", err)
 		}
-		if _, err := s.VerifyMfa(u.ID, MfaProof{Totp: &TotpProof{Code: next}}); !errors.Is(err, ErrReplayedTotp) {
+		_, err := s.VerifyMfa(u.ID, MfaProof{Totp: &TotpProof{Code: next}})
+		if !errors.Is(err, ErrReplayedTotp) {
 			t.Fatalf("replay: err = %v; want ErrReplayedTotp", err)
+		}
+		// ADR 0027 §5-6: a replay is also an invalid credential, with a pinned code.
+		if !errors.Is(err, ErrInvalidCredential) {
+			t.Errorf("replay: errors.Is(err, ErrInvalidCredential) = false; want true")
+		}
+		if got := ErrorCode(err); got != "unauthorized.totp_replayed" {
+			t.Errorf("replay: ErrorCode = %q; want %q", got, "unauthorized.totp_replayed")
 		}
 		// Older, never-used code inside the window: rejected (strict step replay).
 		cur, _ := TotpCompute(secret, now, TotpComputeOptions{})
@@ -206,18 +214,108 @@ func testUserStatusGates(t *testing.T, newStore storeFactory) {
 		}
 	})
 
-	t.Run("create_pat_suspended_user_still_allowed", func(t *testing.T) {
-		// Out of scope for this change (pending a spec clarification):
-		// suspended-user issuance is not refused.
+	t.Run("create_pat_suspended_user_refused_creates_nothing", func(t *testing.T) {
 		s, done := newStore(t)
 		defer done()
 		u := mustUser(t, s, "")
 		if _, err := s.SuspendUser(u.ID); err != nil {
 			t.Fatalf("SuspendUser: %v", err)
 		}
-		if _, err := s.CreatePat(CreatePatInput{UsrID: u.ID, Name: "ci"}); err != nil {
-			t.Errorf("CreatePat for suspended user: %v", err)
+		_, err := s.CreatePat(CreatePatInput{UsrID: u.ID, Name: "ci"})
+		wantPrecondition(t, err, "user_not_active")
+		page, err := s.ListPatsForUser(u.ID, ListPatsOptions{})
+		if err != nil {
+			t.Fatalf("ListPatsForUser: %v", err)
 		}
+		if len(page.Data) != 0 {
+			t.Errorf("refused CreatePat left %d PATs", len(page.Data))
+		}
+	})
+
+	t.Run("sessions_of_non_active_user_refused", func(t *testing.T) {
+		for _, to := range []Status{StatusSuspended, StatusRevoked} {
+			t.Run(string(to), func(t *testing.T) {
+				s, done := newStore(t)
+				defer done()
+				u := mustUser(t, s, "")
+				c := mustCred(t, s, u.ID, "s@example.com", "long-enough-password-for-floor")
+				ses, err := s.CreateSession(u.ID, c.ID, 3600)
+				if err != nil {
+					t.Fatalf("CreateSession: %v", err)
+				}
+				if to == StatusSuspended {
+					_, err = s.SuspendUser(u.ID)
+				} else {
+					_, err = s.RevokeUser(u.ID)
+				}
+				if err != nil {
+					t.Fatalf("transition: %v", err)
+				}
+				if _, err := s.VerifySessionToken(ses.Token); err != ErrInvalidToken {
+					t.Errorf("VerifySessionToken: err = %v; want ErrInvalidToken", err)
+				}
+				before, err := s.ListSessionsForUser(u.ID, ListSessionsOptions{})
+				if err != nil {
+					t.Fatalf("ListSessionsForUser: %v", err)
+				}
+				_, err = s.RefreshSession(ses.Session.ID)
+				wantPrecondition(t, err, "user_not_active")
+				after, err := s.ListSessionsForUser(u.ID, ListSessionsOptions{})
+				if err != nil {
+					t.Fatalf("ListSessionsForUser: %v", err)
+				}
+				if len(after.Data) != len(before.Data) {
+					t.Errorf("refused RefreshSession changed session count %d -> %d", len(before.Data), len(after.Data))
+				}
+			})
+		}
+	})
+
+	t.Run("verify_mfa_suspended_refused_consumes_nothing", func(t *testing.T) {
+		t.Run("totp", func(t *testing.T) {
+			s, done := newStore(t)
+			defer done()
+			u := mustUser(t, s, "")
+			secret := confirmedTotp(t, s, u.ID)
+			next, _ := TotpCompute(secret, time.Now().UTC().Unix()+int64(DefaultTotpPeriod), TotpComputeOptions{})
+			if _, err := s.SuspendUser(u.ID); err != nil {
+				t.Fatalf("SuspendUser: %v", err)
+			}
+			_, err := s.VerifyMfa(u.ID, MfaProof{Totp: &TotpProof{Code: next}})
+			if err != ErrInvalidCredential {
+				t.Fatalf("suspended: err = %v; want ErrInvalidCredential", err)
+			}
+			if _, err := s.ReinstateUser(u.ID); err != nil {
+				t.Fatalf("ReinstateUser: %v", err)
+			}
+			// The refused verify did not advance the step, so the same code works now.
+			if _, err := s.VerifyMfa(u.ID, MfaProof{Totp: &TotpProof{Code: next}}); err != nil {
+				t.Errorf("reinstated, same code: %v", err)
+			}
+		})
+		t.Run("recovery", func(t *testing.T) {
+			s, done := newStore(t)
+			defer done()
+			u := mustUser(t, s, "")
+			rec, err := s.EnrollRecoveryFactor(u.ID)
+			if err != nil {
+				t.Fatalf("EnrollRecoveryFactor: %v", err)
+			}
+			if _, err := s.SuspendUser(u.ID); err != nil {
+				t.Fatalf("SuspendUser: %v", err)
+			}
+			_, err = s.VerifyMfa(u.ID, MfaProof{Recovery: &RecoveryProof{Code: rec.Codes[0]}})
+			if err != ErrInvalidCredential {
+				t.Fatalf("suspended: err = %v; want ErrInvalidCredential", err)
+			}
+			if _, err := s.ReinstateUser(u.ID); err != nil {
+				t.Fatalf("ReinstateUser: %v", err)
+			}
+			// The refused verify did not consume the slot, so the same code works now.
+			if _, err := s.VerifyMfa(u.ID, MfaProof{Recovery: &RecoveryProof{Code: rec.Codes[0]}}); err != nil {
+				t.Errorf("reinstated, same code: %v", err)
+			}
+		})
 	})
 }
 

@@ -751,6 +751,9 @@ func (s *InMemoryIdentityStore) RefreshSession(sesID string) (SessionWithToken, 
 	if !ok {
 		return SessionWithToken{}, fmt.Errorf("session %s: %w", sesID, ErrNotFound)
 	}
+	if !s.userActiveLocked(old.UsrID) {
+		return SessionWithToken{}, &PreconditionError{Msg: "cannot refresh session for non-active user", Reason: "user_not_active"}
+	}
 	if old.RevokedAt != nil {
 		return SessionWithToken{}, ErrSessionExpired
 	}
@@ -1131,6 +1134,10 @@ func (s *InMemoryIdentityStore) verifyWebAuthnProof(usrID string, proof WebAuthn
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	// ADR 0029: user status after the proof, before the counter advances.
+	if !s.userActiveLocked(usrID) {
+		return MfaVerifyResult{}, ErrInvalidCredential
+	}
 	f = s.factors[mfaID]
 	f.SignCount = result.NewSignCount
 	f.UpdatedAt = s.now()
@@ -1170,6 +1177,10 @@ func (s *InMemoryIdentityStore) verifyTotpProof(usrID string, proof TotpProof) (
 	if last, seen := s.totpLastAcceptedStep[mfaID]; seen && step <= last {
 		return MfaVerifyResult{}, ErrReplayedTotp
 	}
+	// ADR 0029: user status after the proof, before the step advances.
+	if !s.userActiveLocked(usrID) {
+		return MfaVerifyResult{}, ErrInvalidCredential
+	}
 	s.totpLastAcceptedStep[mfaID] = step
 	return MfaVerifyResult{MfaID: mfaID, Type: FactorTypeTotp, MfaVerifiedAt: s.now()}, nil
 }
@@ -1203,6 +1214,10 @@ func (s *InMemoryIdentityStore) verifyRecoveryProof(usrID string, proof Recovery
 			return MfaVerifyResult{}, err
 		}
 		if ok {
+			// ADR 0029: user status after the proof, before the slot is consumed.
+			if !s.userActiveLocked(usrID) {
+				return MfaVerifyResult{}, ErrInvalidCredential
+			}
 			consumed[i] = true
 			s.recoveryConsumed[mfaID] = consumed
 			// Update Remaining count on the factor.
@@ -1257,6 +1272,10 @@ func (s *InMemoryIdentityStore) CreatePat(in CreatePatInput) (CreatePatResult, e
 	// ADR 0016 §Constraints: usr_id MUST refer to a non-revoked usr.
 	if u.Status == StatusRevoked {
 		return CreatePatResult{}, &PreconditionError{Msg: "cannot create PAT for revoked user", Reason: "user_revoked"}
+	}
+	// ADR 0029: no issuance to a suspended user either.
+	if u.Status != StatusActive {
+		return CreatePatResult{}, &PreconditionError{Msg: fmt.Sprintf("cannot create PAT for %s user", u.Status), Reason: "user_not_active"}
 	}
 	if len(in.Name) < 1 || len(in.Name) > 120 {
 		return CreatePatResult{}, &PreconditionError{Msg: "name must be 1-120 chars", Reason: "invalid_name"}

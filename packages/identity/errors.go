@@ -12,9 +12,13 @@ import (
 type Error struct {
 	Msg  string
 	Code string
+	// parent makes a sentinel a subtype of another, so errors.Is
+	// matches both (ADR 0027 §5: a replay is an invalid credential).
+	parent error
 }
 
 func (e *Error) Error() string { return e.Msg }
+func (e *Error) Unwrap() error { return e.parent }
 
 // ErrorCode returns the stable code if err is or wraps an *Error.
 // Returns "" otherwise.
@@ -43,8 +47,8 @@ var (
 	ErrInvalidPatToken      = &Error{Msg: "invalid personal access token", Code: "pat.invalid"}
 	// ErrReplayedTotp (fixture name ReplayedTotpError) is raised when a
 	// TOTP code matches a time-step at or before the factor's last
-	// accepted step (ADR 0008 §verifyMfa; strict step replay).
-	ErrReplayedTotp = &Error{Msg: "TOTP code already used", Code: "mfa.totp_replayed"}
+	// accepted step (ADR 0027). It is a subtype of ErrInvalidCredential.
+	ErrReplayedTotp = &Error{Msg: "TOTP code already used", Code: "unauthorized.totp_replayed", parent: ErrInvalidCredential}
 )
 
 // PreconditionError is raised when a precondition fails. Reason
