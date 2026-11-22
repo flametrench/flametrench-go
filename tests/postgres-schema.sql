@@ -474,6 +474,22 @@ CREATE TABLE mfa (
                        CHECK (totp_digits IS NULL OR totp_digits BETWEEN 6 AND 10),
     totp_period      SMALLINT
                        CHECK (totp_period IS NULL OR totp_period BETWEEN 15 AND 120),
+    -- TOTP replay protection (ADR 0027, amending ADR 0008 §verifyMfa). The
+    -- time-step counter (floor(unix_time / totp_period)) of the most recently
+    -- ACCEPTED code for this factor; NULL until the first successful verify
+    -- (confirm counts). Updated in the same transaction as the acceptance,
+    -- under a row lock (SELECT ... FOR UPDATE), so two concurrent verifies of
+    -- one code cannot both succeed.
+    --
+    -- A presented code whose matched step is <= this value MUST be rejected
+    -- (ReplayedTotpError). This also rejects never-used older codes inside
+    -- the ±1 drift window. Rejecting only an EQUAL step is not sufficient: a
+    -- consumed code(N) could be replayed at step N+1 after code(N+1) was
+    -- accepted. On a multi-step match, the highest matched step is compared
+    -- and recorded. Extra state MAY be kept, but everything this rule rejects
+    -- MUST still be rejected (ADR 0027 decision 4).
+    totp_last_accepted_step BIGINT
+                       CHECK (totp_last_accepted_step IS NULL OR totp_last_accepted_step >= 0),
 
     -- ── webauthn-specific ─────────────────────────────────────────────
     webauthn_public_key  BYTEA,           -- COSE_Key bytes
@@ -514,6 +530,7 @@ CREATE TABLE mfa (
             AND webauthn_rp_id        IS NOT NULL
             AND identifier            IS NOT NULL
             AND totp_secret           IS NULL
+            AND totp_last_accepted_step IS NULL
             AND recovery_hashes       IS NULL)
      OR (type = 'recovery'
             AND recovery_hashes       IS NOT NULL
@@ -521,6 +538,7 @@ CREATE TABLE mfa (
             AND array_length(recovery_hashes, 1) = array_length(recovery_consumed, 1)
             AND identifier            IS NULL
             AND totp_secret           IS NULL
+            AND totp_last_accepted_step IS NULL
             AND webauthn_public_key   IS NULL)
     ),
 

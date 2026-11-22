@@ -348,6 +348,15 @@ func (s *PostgresIdentityStore) transUser(usrID string, to Status) (User, error)
 				`UPDATE cred SET status = 'revoked', updated_at = now() WHERE usr_id = $1 AND status = 'active'`, u); err != nil {
 				return err
 			}
+			// ADR 0016 §Constraints: PATs auto-revoke when their owner is revoked.
+			// GREATEST keeps CHECK (revoked_at >= created_at) satisfied when the
+			// injected clock lags the database clock that stamped created_at;
+			// a revoke must never fail on clock skew.
+			if _, err := tx.Exec(s.ctx,
+				`UPDATE pat SET revoked_at = GREATEST($1, created_at), updated_at = GREATEST($1, created_at)
+				 WHERE usr_id = $2 AND revoked_at IS NULL`, now, u); err != nil {
+				return err
+			}
 		}
 		return nil
 	})
@@ -714,16 +723,19 @@ func (s *PostgresIdentityStore) VerifyPassword(identifier, password string) (Ver
 	var hasPol bool
 	var required bool
 	var grace *time.Time
+	var usrStatus Status
 	err := s.exec.QueryRow(s.ctx, `
 		SELECT cred.id, cred.usr_id, cred.password_hash,
 		       (mfa_pol.required IS NOT NULL) AS has_policy,
 		       COALESCE(mfa_pol.required, false) AS required,
-		       mfa_pol.grace_until
+		       mfa_pol.grace_until,
+		       usr.status
 		FROM cred
+		JOIN usr ON usr.id = cred.usr_id
 		LEFT JOIN usr_mfa_policy AS mfa_pol ON mfa_pol.usr_id = cred.usr_id
 		WHERE cred.type = 'password' AND cred.identifier = $1 AND cred.status = 'active'`,
 		identifier,
-	).Scan(&credU, &usrU, &hash, &hasPol, &required, &grace)
+	).Scan(&credU, &usrU, &hash, &hasPol, &required, &grace, &usrStatus)
 	if errors.Is(err, pgx.ErrNoRows) {
 		_, _ = VerifyPasswordHash(PatDummyPHCHash, password)
 		return VerifiedCredential{}, ErrInvalidCredential
@@ -736,6 +748,13 @@ func (s *PostgresIdentityStore) VerifyPassword(identifier, password string) (Ver
 		return VerifiedCredential{}, err
 	}
 	if !ok {
+		return VerifiedCredential{}, ErrInvalidCredential
+	}
+	// User status is checked only AFTER the hash verify, and a non-active
+	// user gets the same InvalidCredential as a wrong password, so neither
+	// timing nor the error discloses the user's status (docs/identity.md
+	// §Lifecycle: a suspended user cannot authenticate).
+	if usrStatus != StatusActive {
 		return VerifiedCredential{}, ErrInvalidCredential
 	}
 	mfaReq := false
@@ -763,6 +782,20 @@ func (s *PostgresIdentityStore) CreateSession(usrID, credID string, ttlSeconds i
 	th := hashTokenBytes(token)
 	var ses Session
 	err = s.inTx(func(tx pgx.Tx) error {
+		// User status is checked before credential status (matches the
+		// other SDKs): no session is issued to a suspended or revoked
+		// user. FOR SHARE serializes against a concurrent status change,
+		// which takes FOR UPDATE on the same row.
+		var usrStatus Status
+		if err := tx.QueryRow(s.ctx, `SELECT status FROM usr WHERE id = $1 FOR SHARE`, usrU).Scan(&usrStatus); err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return fmt.Errorf("user %s: %w", usrID, ErrNotFound)
+			}
+			return err
+		}
+		if usrStatus != StatusActive {
+			return &PreconditionError{Msg: fmt.Sprintf("cannot create session for %s user", usrStatus), Reason: "user_not_active"}
+		}
 		var credStatus Status
 		var credUsr uuid.UUID
 		if err := tx.QueryRow(s.ctx, `SELECT status, usr_id FROM cred WHERE id = $1`, credU).Scan(&credStatus, &credUsr); err != nil {
@@ -872,15 +905,22 @@ func (s *PostgresIdentityStore) VerifySessionToken(token string) (Session, error
 	th := hashTokenBytes(token)
 	var ses Session
 	var sid, usrU, credU uuid.UUID
+	var usrStatus Status
 	err := s.exec.QueryRow(s.ctx,
-		`SELECT id, usr_id, cred_id, created_at, expires_at, revoked_at FROM ses WHERE token_hash = $1`,
+		`SELECT s.id, s.usr_id, s.cred_id, s.created_at, s.expires_at, s.revoked_at, u.status
+		 FROM ses s JOIN usr u ON u.id = s.usr_id WHERE s.token_hash = $1`,
 		[]byte(th),
-	).Scan(&sid, &usrU, &credU, &ses.CreatedAt, &ses.ExpiresAt, &ses.RevokedAt)
+	).Scan(&sid, &usrU, &credU, &ses.CreatedAt, &ses.ExpiresAt, &ses.RevokedAt, &usrStatus)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Session{}, ErrInvalidToken
 	}
 	if err != nil {
 		return Session{}, err
+	}
+	// ADR 0029: a non-active user's token is an invalid token, whatever
+	// the session's own state (the suspend cascade has usually revoked it).
+	if usrStatus != StatusActive {
+		return Session{}, ErrInvalidToken
 	}
 	if ses.RevokedAt != nil || !s.clock().Before(ses.ExpiresAt) {
 		return Session{}, ErrSessionExpired
@@ -906,12 +946,25 @@ func (s *PostgresIdentityStore) RefreshSession(sesID string) (SessionWithToken, 
 		var oldUsr, oldCred uuid.UUID
 		var revoked *time.Time
 		var created, expires time.Time
-		err := tx.QueryRow(s.ctx,
-			`SELECT usr_id, cred_id, created_at, expires_at, revoked_at FROM ses WHERE id = $1 FOR UPDATE`, oldU,
-		).Scan(&oldUsr, &oldCred, &created, &expires, &revoked)
+		// ADR 0029: no new session for a non-active user. The user row is
+		// locked before the session row, the same order as the user-status
+		// transitions (usr, then ses), so the two cannot deadlock. A
+		// session's usr_id never changes, so reading it unlocked is safe.
+		err := tx.QueryRow(s.ctx, `SELECT usr_id FROM ses WHERE id = $1`, oldU).Scan(&oldUsr)
 		if errors.Is(err, pgx.ErrNoRows) {
 			return fmt.Errorf("session %s: %w", sesID, ErrNotFound)
 		}
+		if err != nil {
+			return err
+		}
+		if active, err := s.userActiveTx(tx, oldUsr); err != nil {
+			return err
+		} else if !active {
+			return &PreconditionError{Msg: "cannot refresh session for non-active user", Reason: "user_not_active"}
+		}
+		err = tx.QueryRow(s.ctx,
+			`SELECT cred_id, created_at, expires_at, revoked_at FROM ses WHERE id = $1 FOR UPDATE`, oldU,
+		).Scan(&oldCred, &created, &expires, &revoked)
 		if err != nil {
 			return err
 		}
@@ -1070,12 +1123,54 @@ func (s *PostgresIdentityStore) EnrollRecoveryFactor(usrID string) (RecoveryEnro
 	consumed := make([]bool, len(codes))
 	newID := uuid.Must(uuid.NewV7())
 	var f Factor
-	err = s.exec.QueryRow(s.ctx, `
-		INSERT INTO mfa (id, usr_id, type, status, recovery_hashes, recovery_consumed)
-		VALUES ($1, $2, 'recovery', 'active', $3, $4)
-		RETURNING id, created_at, updated_at`,
-		newID, usrU, hashes, consumed,
-	).Scan(&newID, &f.CreatedAt, &f.UpdatedAt)
+	// ADR 0008 §Recovery code semantics: re-enrolling after the set is
+	// exhausted generates a fresh set and revokes the old one, leaving
+	// exactly one active set. Re-enrolling over an unexhausted set is
+	// refused (the accepted text is silent there; this matches the other
+	// SDKs). Revoke + insert run in one transaction under a row lock.
+	err = s.inTx(func(tx pgx.Tx) error {
+		var prevID *uuid.UUID
+		var prev uuid.UUID
+		var prevConsumed []bool
+		err := tx.QueryRow(s.ctx, `
+			SELECT id, recovery_consumed FROM mfa
+			WHERE usr_id = $1 AND type = 'recovery' AND status = 'active' FOR UPDATE`, usrU,
+		).Scan(&prev, &prevConsumed)
+		switch {
+		case errors.Is(err, pgx.ErrNoRows):
+		case err != nil:
+			return err
+		default:
+			for _, c := range prevConsumed {
+				if !c {
+					return &PreconditionError{Msg: "user already has an active recovery factor", Reason: "active_singleton_exists"}
+				}
+			}
+			if _, err := tx.Exec(s.ctx,
+				`UPDATE mfa SET status = 'revoked', updated_at = now() WHERE id = $1`, prev); err != nil {
+				return err
+			}
+			prevID = &prev
+		}
+		err = tx.QueryRow(s.ctx, `
+			INSERT INTO mfa (id, usr_id, type, status, replaces, recovery_hashes, recovery_consumed)
+			VALUES ($1, $2, 'recovery', 'active', $3, $4, $5)
+			RETURNING id, created_at, updated_at`,
+			newID, usrU, prevID, hashes, consumed,
+		).Scan(&newID, &f.CreatedAt, &f.UpdatedAt)
+		if isUniqueViolation(err) {
+			// A concurrent enrollment won the active-singleton race.
+			return &PreconditionError{Msg: "user already has an active recovery factor", Reason: "active_singleton_exists"}
+		}
+		if err != nil {
+			return err
+		}
+		if prevID != nil {
+			w := uuidToWire("mfa", *prevID)
+			f.Replaces = &w
+		}
+		return nil
+	})
 	if err != nil {
 		return RecoveryEnrollmentResult{}, err
 	}
@@ -1111,17 +1206,19 @@ func (s *PostgresIdentityStore) ConfirmTotpFactor(mfaID, code string) (Factor, e
 		if typ != "totp" || status != FactorStatusPending {
 			return &PreconditionError{Msg: "factor not in pending TOTP state", Reason: "invalid_transition"}
 		}
-		ok, err := TotpVerify(secret, code, s.clock().Unix(), 1, TotpComputeOptions{})
+		step, ok, err := TotpMatchStep(secret, code, s.clock().Unix(), 1, TotpComputeOptions{})
 		if err != nil {
 			return err
 		}
 		if !ok {
 			return ErrInvalidCredential
 		}
+		// Enrollment confirmation counts as an acceptance for replay
+		// protection (mfa.totp_last_accepted_step).
 		var resID uuid.UUID
 		err = tx.QueryRow(s.ctx,
-			`UPDATE mfa SET status = 'active', pending_expires_at = NULL, updated_at = now() WHERE id = $1
-			 RETURNING id, created_at, updated_at`, u,
+			`UPDATE mfa SET status = 'active', pending_expires_at = NULL, totp_last_accepted_step = $2, updated_at = now() WHERE id = $1
+			 RETURNING id, created_at, updated_at`, u, step,
 		).Scan(&resID, &f.CreatedAt, &f.UpdatedAt)
 		if err != nil {
 			return err
@@ -1216,13 +1313,14 @@ func (s *PostgresIdentityStore) loadFactor(u uuid.UUID) (Factor, error) {
 		rpID       *string
 		signCount  *int64
 		recCons    []bool
+		replaces   *uuid.UUID
 	)
 	err := s.exec.QueryRow(s.ctx, `
-		SELECT id, usr_id, type, identifier, status,
+		SELECT id, usr_id, type, identifier, status, replaces,
 		       webauthn_rp_id, webauthn_sign_count, recovery_consumed,
 		       created_at, updated_at
 		FROM mfa WHERE id = $1`, u,
-	).Scan(&u, &usrU, &typ, &identifier, &status, &rpID, &signCount, &recCons, &f.CreatedAt, &f.UpdatedAt)
+	).Scan(&u, &usrU, &typ, &identifier, &status, &replaces, &rpID, &signCount, &recCons, &f.CreatedAt, &f.UpdatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Factor{}, fmt.Errorf("factor %s: %w", uuidToWire("mfa", u), ErrNotFound)
 	}
@@ -1235,6 +1333,10 @@ func (s *PostgresIdentityStore) loadFactor(u uuid.UUID) (Factor, error) {
 	f.Status = status
 	if identifier != nil {
 		f.Identifier = *identifier
+	}
+	if replaces != nil {
+		w := uuidToWire("mfa", *replaces)
+		f.Replaces = &w
 	}
 	if rpID != nil {
 		f.RpID = *rpID
@@ -1378,27 +1480,71 @@ func (s *PostgresIdentityStore) VerifyMfa(usrID string, proof MfaProof) (MfaVeri
 	return MfaVerifyResult{}, errors.New("empty MFA proof")
 }
 
-func (s *PostgresIdentityStore) vfyTotp(usrU uuid.UUID, p TotpProof) (MfaVerifyResult, error) {
-	var mfaID uuid.UUID
-	var secret []byte
-	err := s.exec.QueryRow(s.ctx,
-		`SELECT id, totp_secret FROM mfa WHERE usr_id = $1 AND type = 'totp' AND status = 'active' LIMIT 1`,
-		usrU,
-	).Scan(&mfaID, &secret)
+// userActiveTx reports whether the user exists and is active, inside tx.
+// FOR SHARE serializes against a concurrent status change (FOR UPDATE).
+func (s *PostgresIdentityStore) userActiveTx(tx pgx.Tx, usrU uuid.UUID) (bool, error) {
+	var st Status
+	err := tx.QueryRow(s.ctx, `SELECT status FROM usr WHERE id = $1 FOR SHARE`, usrU).Scan(&st)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return MfaVerifyResult{}, fmt.Errorf("no active TOTP factor: %w", ErrNotFound)
+		return false, nil
 	}
-	if err != nil {
-		return MfaVerifyResult{}, err
-	}
-	ok, err := TotpVerify(secret, p.Code, s.clock().Unix(), 1, TotpComputeOptions{})
-	if err != nil {
-		return MfaVerifyResult{}, err
-	}
-	if !ok {
-		return MfaVerifyResult{}, ErrInvalidCredential
-	}
-	return MfaVerifyResult{MfaID: uuidToWire("mfa", mfaID), Type: FactorTypeTotp, MfaVerifiedAt: s.clock()}, nil
+	return st == StatusActive, err
+}
+
+func (s *PostgresIdentityStore) vfyTotp(usrU uuid.UUID, p TotpProof) (MfaVerifyResult, error) {
+	var out MfaVerifyResult
+	// Match, replay check and step update run in one transaction under a
+	// row lock on the factor, so two concurrent verifies of one code
+	// cannot both succeed.
+	err := s.inTx(func(tx pgx.Tx) error {
+		var mfaID uuid.UUID
+		var secret []byte
+		var last *int64
+		err := tx.QueryRow(s.ctx,
+			`SELECT id, totp_secret, totp_last_accepted_step FROM mfa
+			 WHERE usr_id = $1 AND type = 'totp' AND status = 'active' LIMIT 1 FOR UPDATE`,
+			usrU,
+		).Scan(&mfaID, &secret, &last)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return fmt.Errorf("no active TOTP factor: %w", ErrNotFound)
+		}
+		if err != nil {
+			return err
+		}
+		step, ok, err := TotpMatchStep(secret, p.Code, s.clock().Unix(), 1, TotpComputeOptions{})
+		if err != nil {
+			return err
+		}
+		if !ok {
+			return ErrInvalidCredential
+		}
+		// Strict step replay: reject any step at or before the
+		// last accepted one. The conditional UPDATE re-asserts the rule in
+		// the database, so it holds even without the row lock.
+		if last != nil && step <= *last {
+			return ErrReplayedTotp
+		}
+		// ADR 0029: user status after the proof, before the step advances.
+		if active, err := s.userActiveTx(tx, usrU); err != nil {
+			return err
+		} else if !active {
+			return ErrInvalidCredential
+		}
+		tag, err := tx.Exec(s.ctx,
+			`UPDATE mfa SET totp_last_accepted_step = $2, updated_at = now()
+			 WHERE id = $1 AND (totp_last_accepted_step IS NULL OR totp_last_accepted_step < $2)`,
+			mfaID, step,
+		)
+		if err != nil {
+			return err
+		}
+		if tag.RowsAffected() != 1 {
+			return ErrReplayedTotp
+		}
+		out = MfaVerifyResult{MfaID: uuidToWire("mfa", mfaID), Type: FactorTypeTotp, MfaVerifiedAt: s.clock()}
+		return nil
+	})
+	return out, err
 }
 
 func (s *PostgresIdentityStore) vfyRecovery(usrU uuid.UUID, p RecoveryProof) (MfaVerifyResult, error) {
@@ -1431,6 +1577,12 @@ func (s *PostgresIdentityStore) vfyRecovery(usrU uuid.UUID, p RecoveryProof) (Mf
 				return err
 			}
 			if ok {
+				// ADR 0029: user status after the proof, before the slot is consumed.
+				if active, err := s.userActiveTx(tx, usrU); err != nil {
+					return err
+				} else if !active {
+					return ErrInvalidCredential
+				}
 				consumed[i] = true
 				if _, err := tx.Exec(s.ctx,
 					`UPDATE mfa SET recovery_consumed = $2, updated_at = now() WHERE id = $1`,
@@ -1480,6 +1632,12 @@ func (s *PostgresIdentityStore) vfyWebAuthn(usrU uuid.UUID, p WebAuthnProof) (Mf
 		})
 		if err != nil {
 			return err
+		}
+		// ADR 0029: user status after the proof, before the counter advances.
+		if active, err := s.userActiveTx(tx, usrU); err != nil {
+			return err
+		} else if !active {
+			return ErrInvalidCredential
 		}
 		if _, err := tx.Exec(s.ctx,
 			`UPDATE mfa SET webauthn_sign_count = $2, updated_at = now() WHERE id = $1`,
@@ -1566,12 +1724,28 @@ func (s *PostgresIdentityStore) CreatePat(in CreatePatInput) (CreatePatResult, e
 		scope = []string{}
 	}
 	var pat PersonalAccessToken
-	err = s.exec.QueryRow(s.ctx, `
-		INSERT INTO pat (id, usr_id, name, scope, secret_hash, expires_at)
-		VALUES ($1, $2, $3, $4, $5, $6)
-		RETURNING name, scope, expires_at, last_used_at, revoked_at, created_at, updated_at`,
-		newID, usrU, in.Name, scope, hash, in.ExpiresAt,
-	).Scan(&pat.Name, &pat.Scope, &pat.ExpiresAt, &pat.LastUsedAt, &pat.RevokedAt, &pat.CreatedAt, &pat.UpdatedAt)
+	err = s.inTx(func(tx pgx.Tx) error {
+		// ADR 0016 §Constraints and ADR 0029: usr_id MUST refer to an active
+		// usr. FOR SHARE serializes against a concurrent status change (FOR
+		// UPDATE), so a PAT cannot be minted after the revoke cascade has run.
+		var usrStatus Status
+		if err := tx.QueryRow(s.ctx, `SELECT status FROM usr WHERE id = $1 FOR SHARE`, usrU).Scan(&usrStatus); err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return fmt.Errorf("user %s: %w", in.UsrID, ErrNotFound)
+			}
+			return err
+		}
+		// ADR 0029: one reason for suspended and revoked, pinned across SDKs.
+		if usrStatus != StatusActive {
+			return &PreconditionError{Msg: fmt.Sprintf("cannot create PAT for %s user", usrStatus), Reason: "user_not_active"}
+		}
+		return tx.QueryRow(s.ctx, `
+			INSERT INTO pat (id, usr_id, name, scope, secret_hash, expires_at)
+			VALUES ($1, $2, $3, $4, $5, $6)
+			RETURNING name, scope, expires_at, last_used_at, revoked_at, created_at, updated_at`,
+			newID, usrU, in.Name, scope, hash, in.ExpiresAt,
+		).Scan(&pat.Name, &pat.Scope, &pat.ExpiresAt, &pat.LastUsedAt, &pat.RevokedAt, &pat.CreatedAt, &pat.UpdatedAt)
+	})
 	if err != nil {
 		return CreatePatResult{}, err
 	}
@@ -1692,11 +1866,13 @@ func (s *PostgresIdentityStore) VerifyPatToken(token string) (VerifiedPat, error
 		expiresAt *time.Time
 		revokedAt *time.Time
 		scope     []string
+		usrStatus Status
 	)
 	err = s.exec.QueryRow(s.ctx,
-		`SELECT usr_id, secret_hash, expires_at, revoked_at, scope FROM pat WHERE id = $1`,
+		`SELECT pat.usr_id, pat.secret_hash, pat.expires_at, pat.revoked_at, pat.scope, usr.status
+		 FROM pat JOIN usr ON usr.id = pat.usr_id WHERE pat.id = $1`,
 		patU,
-	).Scan(&usrU, &hash, &expiresAt, &revokedAt, &scope)
+	).Scan(&usrU, &hash, &expiresAt, &revokedAt, &scope, &usrStatus)
 	if errors.Is(err, pgx.ErrNoRows) {
 		_, _ = VerifyPasswordHash(PatDummyPHCHash, secret)
 		return VerifiedPat{}, ErrInvalidPatToken
@@ -1716,6 +1892,14 @@ func (s *PostgresIdentityStore) VerifyPatToken(token string) (VerifiedPat, error
 		return VerifiedPat{}, err
 	}
 	if !ok {
+		return VerifiedPat{}, ErrInvalidPatToken
+	}
+	// Owner status is checked AFTER the secret verify and conflated into
+	// ErrInvalidPatToken, so the response discloses nothing about the
+	// owner's status (docs/identity.md §Lifecycle: a suspended user cannot
+	// authenticate). Evaluated at verify time, so reinstatement restores
+	// the same token.
+	if usrStatus != StatusActive {
 		return VerifiedPat{}, ErrInvalidPatToken
 	}
 	// Coalesced last_used_at update. We discard the error here: this

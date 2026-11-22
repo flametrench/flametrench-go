@@ -33,6 +33,16 @@ var (
 	ErrEvaluationLimit    = &Error{Msg: "rewrite-rule evaluation limit exceeded", Code: "authz.evaluation_limit"}
 )
 
+// PreconditionError is raised when a precondition fails. Reason
+// disambiguates (e.g. "creator_revoked").
+type PreconditionError struct {
+	Msg    string
+	Reason string
+}
+
+func (e *PreconditionError) Error() string { return e.Msg }
+func (e *PreconditionError) Unwrap() error { return &Error{Msg: e.Msg, Code: "precondition." + e.Reason} }
+
 // IsTupleNotFound reports whether err is or wraps ErrTupleNotFound.
 func IsTupleNotFound(err error) bool { return errors.Is(err, ErrTupleNotFound) }
 

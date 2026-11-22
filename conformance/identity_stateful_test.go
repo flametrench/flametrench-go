@@ -2,31 +2,59 @@
 // SPDX-License-Identifier: Apache-2.0
 
 // Stateful conformance runners for identity fixtures that require a live
-// store: list-users (ADR 0015) and user-display-name (ADR 0014).
+// store: list-users (ADR 0015), user-display-name (ADR 0014), TOTP replay
+// (ADR 0027), user-status gates (ADR 0029) and, against Postgres, the
+// share created_by status gate.
 
 package conformance
 
 import (
+	"context"
+	"encoding/base32"
 	"errors"
 	"fmt"
 	"path/filepath"
 	"sort"
+	"strings"
 	"testing"
+	"time"
 
+	"github.com/flametrench/flametrench-go/packages/authz"
 	"github.com/flametrench/flametrench-go/packages/identity"
+
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-// classifyIdentityError maps a Go error to the fixture error class name.
+// classifyIdentityError maps a Go error to the MOST SPECIFIC fixture error
+// class name. A harness passes only on an exact class match (ADR 0027 §7),
+// so a subtype is checked before its parent: ReplayedTotpError is also an
+// InvalidCredentialError, and must not classify as one.
 func classifyIdentityError(err error) string {
-	if errors.Is(err, identity.ErrNotFound) {
+	var pre *identity.PreconditionError
+	var apre *authz.PreconditionError
+	var revoked *identity.PatRevokedError
+	var expired *identity.PatExpiredError
+	switch {
+	case errors.Is(err, identity.ErrNotFound):
 		return "NotFoundError"
-	}
-	if errors.Is(err, identity.ErrAlreadyTerminal) {
+	case errors.Is(err, identity.ErrAlreadyTerminal):
 		return "AlreadyTerminalError"
-	}
-	var pe *identity.PreconditionError
-	if errors.As(err, &pe) {
+	case errors.As(err, &pre), errors.As(err, &apre):
 		return "PreconditionError"
+	case errors.Is(err, identity.ErrReplayedTotp):
+		return "ReplayedTotpError"
+	case errors.Is(err, identity.ErrInvalidCredential):
+		return "InvalidCredentialError"
+	case errors.Is(err, identity.ErrInvalidToken):
+		return "InvalidTokenError"
+	case errors.Is(err, identity.ErrSessionExpired):
+		return "SessionExpiredError"
+	case errors.Is(err, identity.ErrInvalidPatToken):
+		return "InvalidPatTokenError"
+	case errors.As(err, &revoked):
+		return "PatRevokedError"
+	case errors.As(err, &expired):
+		return "PatExpiredError"
 	}
 	return "UnknownError:" + err.Error()
 }
@@ -54,10 +82,31 @@ func assertIdentityStepError(t *testing.T, caseID, op string, expected map[strin
 	return true
 }
 
+// runIdentityStepCase runs c against a fresh in-memory store whose clock
+// the fixture can pin with set_clock.
 func runIdentityStepCase(t *testing.T, c StepCase) {
 	t.Helper()
-	store := identity.NewInMemoryIdentityStore()
+	var pinned *time.Time
+	store := identity.NewInMemoryIdentityStore().WithClock(func() time.Time {
+		if pinned != nil {
+			return *pinned
+		}
+		return time.Now().UTC()
+	})
+	runIdentitySteps(t, c, store, nil, &pinned)
+}
+
+// runIdentitySteps runs c's steps against store. shares is needed only by
+// create_share; pinned is nil when the store's clock can't be pinned.
+func runIdentitySteps(t *testing.T, c StepCase, store identity.IdentityStore, shares authz.ShareStore, pinned **time.Time) {
+	t.Helper()
 	captures := make(map[string]string)
+	clockNow := func() time.Time {
+		if pinned != nil && *pinned != nil {
+			return **pinned
+		}
+		return time.Now().UTC()
+	}
 
 	for stepIdx, rawStep := range c.Steps {
 		stepLabel := fmt.Sprintf("step[%d]:%s", stepIdx, rawStep.Op)
@@ -121,6 +170,121 @@ func runIdentityStepCase(t *testing.T, c StepCase) {
 		case "revoke_user":
 			usrID := strField(input, "usr_id")
 			_, err := store.RevokeUser(usrID)
+			if !assertIdentityStepError(t, c.ID, stepLabel, expected, err) {
+				return
+			}
+
+		case "reinstate_user":
+			_, err := store.ReinstateUser(strField(input, "usr_id"))
+			if !assertIdentityStepError(t, c.ID, stepLabel, expected, err) {
+				return
+			}
+
+		case "verify_password":
+			_, err := store.VerifyPassword(strField(input, "identifier"), strField(input, "password"))
+			if !assertIdentityStepError(t, c.ID, stepLabel, expected, err) {
+				return
+			}
+
+		case "create_session":
+			ttl, _ := input["ttl_seconds"].(float64)
+			_, err := store.CreateSession(strField(input, "usr_id"), strField(input, "cred_id"), int(ttl))
+			if !assertIdentityStepError(t, c.ID, stepLabel, expected, err) {
+				return
+			}
+
+		case "create_pat":
+			res, err := store.CreatePat(identity.CreatePatInput{
+				UsrID: strField(input, "usr_id"),
+				Name:  strField(input, "name"),
+				Scope: toStringSlice(input["scope"]),
+			})
+			if !assertIdentityStepError(t, c.ID, stepLabel, expected, err) {
+				return
+			}
+			if err == nil {
+				for varName, path := range rawStep.Captures {
+					if path == "token" {
+						captures[varName] = res.Token
+					}
+				}
+			}
+
+		case "verify_pat_token":
+			_, err := store.VerifyPatToken(strField(input, "token"))
+			if !assertIdentityStepError(t, c.ID, stepLabel, expected, err) {
+				return
+			}
+
+		case "set_clock":
+			if pinned == nil {
+				t.Fatalf("%s/%s: this store's clock cannot be pinned", c.ID, stepLabel)
+			}
+			now, err := time.Parse(time.RFC3339, strField(input, "now"))
+			if err != nil {
+				t.Fatalf("%s/%s: parse now: %v", c.ID, stepLabel, err)
+			}
+			*pinned = &now
+
+		case "enroll_totp_factor":
+			res, err := store.EnrollTotpFactor(strField(input, "usr_id"), "conformance", identity.TotpComputeOptions{})
+			if !assertIdentityStepError(t, c.ID, stepLabel, expected, err) {
+				return
+			}
+			if err == nil {
+				for varName, path := range rawStep.Captures {
+					switch path {
+					case "factor.id":
+						captures[varName] = res.Factor.ID
+					case "secret":
+						captures[varName] = res.SecretB32
+					}
+				}
+			}
+
+		case "compute_totp_code":
+			secret, err := base32.StdEncoding.WithPadding(base32.NoPadding).DecodeString(strings.ToUpper(strField(input, "secret")))
+			if err != nil {
+				t.Fatalf("%s/%s: decode secret: %v", c.ID, stepLabel, err)
+			}
+			code, err := identity.TotpCompute(secret, clockNow().Unix(), identity.TotpComputeOptions{})
+			if err != nil {
+				t.Fatalf("%s/%s: TotpCompute: %v", c.ID, stepLabel, err)
+			}
+			for varName, path := range rawStep.Captures {
+				if path == "code" {
+					captures[varName] = code
+				}
+			}
+
+		case "confirm_totp_factor":
+			_, err := store.ConfirmTotpFactor(strField(input, "mfa_id"), strField(input, "code"))
+			if !assertIdentityStepError(t, c.ID, stepLabel, expected, err) {
+				return
+			}
+
+		case "verify_mfa":
+			proof, _ := input["proof"].(map[string]any)
+			if strField(proof, "type") != "totp" {
+				t.Fatalf("%s/%s: unsupported proof type %q", c.ID, stepLabel, strField(proof, "type"))
+			}
+			_, err := store.VerifyMfa(strField(input, "usr_id"), identity.MfaProof{Totp: &identity.TotpProof{Code: strField(proof, "code")}})
+			if !assertIdentityStepError(t, c.ID, stepLabel, expected, err) {
+				return
+			}
+
+		case "create_share":
+			if shares == nil {
+				t.Fatalf("%s/%s: create_share needs a share store", c.ID, stepLabel)
+			}
+			ttl, _ := input["expires_in_seconds"].(float64)
+			_, err := shares.CreateShare(authz.CreateShareInput{
+				ObjectType:       strField(input, "object_type"),
+				ObjectID:         strField(input, "object_id"),
+				Relation:         strField(input, "relation"),
+				CreatedBy:        strField(input, "created_by"),
+				ExpiresInSeconds: int(ttl),
+			})
 			if !assertIdentityStepError(t, c.ID, stepLabel, expected, err) {
 				return
 			}
@@ -316,6 +480,46 @@ func TestUserDisplayNameConformance(t *testing.T) {
 		c := c
 		t.Run(c.ID, func(t *testing.T) {
 			runIdentityStepCase(t, c)
+		})
+	}
+}
+
+func TestUserStatusGatesConformance(t *testing.T) {
+	f := loadStepFixtureFile(t, filepath.Join("fixtures", "identity", "user-status-gates.json"))
+	for _, c := range f.Tests {
+		c := c
+		t.Run(c.ID, func(t *testing.T) { runIdentityStepCase(t, c) })
+	}
+}
+
+func TestTotpReplayConformance(t *testing.T) {
+	f := loadStepFixtureFile(t, filepath.Join("fixtures", "identity", "mfa", "totp-replay-rejected.json"))
+	for _, c := range f.Tests {
+		c := c
+		t.Run(c.ID, func(t *testing.T) { runIdentityStepCase(t, c) })
+	}
+}
+
+// TestShareCreatedByStatusConformance runs against Postgres only: the
+// in-memory share store has no usr registry to check created_by against.
+func TestShareCreatedByStatusConformance(t *testing.T) {
+	url := pgURL(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	pool, err := pgxpool.New(ctx, url)
+	if err != nil {
+		t.Skipf("pgxpool.New: %v", err)
+	}
+	defer pool.Close()
+	if err := pool.Ping(ctx); err != nil {
+		t.Skipf("ping failed: %v", err)
+	}
+	f := loadStepFixtureFile(t, filepath.Join("fixtures", "authorization", "shares", "created-by-status.json"))
+	for _, c := range f.Tests {
+		c := c
+		t.Run(c.ID, func(t *testing.T) {
+			resetDB(t, pool)
+			runIdentitySteps(t, c, identity.NewPostgresIdentityStore(ctx, pool), authz.NewPostgresShareStore(ctx, pool), nil)
 		})
 	}
 }

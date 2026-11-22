@@ -1,0 +1,137 @@
+{
+  "$schema": "../../../fixture.schema.json",
+  "spec_version": "0.2.0",
+  "capability": "authorization",
+  "operation": "create_share",
+  "conformance_level": "MUST",
+  "spec_section": "docs/shares.md#validation",
+  "description": "`createShare`: `created_by` MUST resolve to an `active` `usr_id` (docs/shares.md \u00a7createShare/Validation; ADR 0012; ADR 0029, which moved the suspended-creator case from SHOULD to MUST). A revoked or suspended creator is refused with `PreconditionError` (pinned by ADR 0029); an active creator, and a reinstated one, succeed. Requires a share store backed by a user registry (the Postgres store; in-memory share stores have no usr table) \u2014 harnesses run this file against Postgres, with identity ops `create_user` / `revoke_user` / `suspend_user` / `reinstate_user` against the same database. OBJECT ID FORMAT: `object_id` is a wire-format id with an application-defined prefix (`doc_<32hex>`), which every SDK's share store accepts via `decodeAny` (spec#8 resolution); a bare UUID is deliberately avoided because acceptance of bare UUIDs differs across SDKs and is part of the open `object_id` (UUID vs opaque) question, which this fixture must not depend on.",
+  "tests": [
+    {
+      "id": "create_share.revoked_creator_refused",
+      "description": "A revoked user cannot mint a share.",
+      "users": [],
+      "steps": [
+        {
+          "op": "create_user",
+          "input": {},
+          "captures": {
+            "usr_id": "user.id"
+          }
+        },
+        {
+          "op": "revoke_user",
+          "input": {
+            "usr_id": "{usr_id}"
+          }
+        },
+        {
+          "op": "create_share",
+          "input": {
+            "object_type": "doc",
+            "object_id": "doc_0190f2a81b3c7abc8123bbbbbbbbbbbb",
+            "relation": "viewer",
+            "created_by": "{usr_id}",
+            "expires_in_seconds": 3600
+          },
+          "expected": {
+            "error": "PreconditionError"
+          }
+        }
+      ]
+    },
+    {
+      "id": "create_share.suspended_creator_refused",
+      "description": "A suspended user cannot mint a share (`PreconditionError`, ADR 0029).",
+      "users": [],
+      "steps": [
+        {
+          "op": "create_user",
+          "input": {},
+          "captures": {
+            "usr_id": "user.id"
+          }
+        },
+        {
+          "op": "suspend_user",
+          "input": {
+            "usr_id": "{usr_id}"
+          }
+        },
+        {
+          "op": "create_share",
+          "input": {
+            "object_type": "doc",
+            "object_id": "doc_0190f2a81b3c7abc8123bbbbbbbbbbbb",
+            "relation": "viewer",
+            "created_by": "{usr_id}",
+            "expires_in_seconds": 3600
+          },
+          "expected": {
+            "error": "PreconditionError"
+          }
+        }
+      ]
+    },
+    {
+      "id": "create_share.active_creator_ok",
+      "description": "Known positive: an active user mints a share.",
+      "users": [],
+      "steps": [
+        {
+          "op": "create_user",
+          "input": {},
+          "captures": {
+            "usr_id": "user.id"
+          }
+        },
+        {
+          "op": "create_share",
+          "input": {
+            "object_type": "doc",
+            "object_id": "doc_0190f2a81b3c7abc8123bbbbbbbbbbbb",
+            "relation": "viewer",
+            "created_by": "{usr_id}",
+            "expires_in_seconds": 3600
+          }
+        }
+      ]
+    },
+    {
+      "id": "create_share.reinstated_creator_ok",
+      "description": "Known positive: after suspend then reinstate, the user mints a share.",
+      "users": [],
+      "steps": [
+        {
+          "op": "create_user",
+          "input": {},
+          "captures": {
+            "usr_id": "user.id"
+          }
+        },
+        {
+          "op": "suspend_user",
+          "input": {
+            "usr_id": "{usr_id}"
+          }
+        },
+        {
+          "op": "reinstate_user",
+          "input": {
+            "usr_id": "{usr_id}"
+          }
+        },
+        {
+          "op": "create_share",
+          "input": {
+            "object_type": "doc",
+            "object_id": "doc_0190f2a81b3c7abc8123bbbbbbbbbbbb",
+            "relation": "viewer",
+            "created_by": "{usr_id}",
+            "expires_in_seconds": 3600
+          }
+        }
+      ]
+    }
+  ]
+}
