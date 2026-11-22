@@ -413,6 +413,28 @@ func runTenancyStepCase(t *testing.T, c StepCase) {
 				return
 			}
 
+		case "revoke_invitation":
+			invID := strField(input, "inv_id")
+			adminUsrID := strField(input, "admin_usr_id")
+			result, err := store.RevokeInvitation(invID, adminUsrID)
+			if !assertTenancyStepError(t, c.ID, stepLabel, expected, err) {
+				return
+			}
+			if err == nil {
+				for varName, path := range rawStep.Captures {
+					if path == "terminal_by" && result.TerminalBy != nil {
+						captures[varName] = *result.TerminalBy
+					}
+				}
+			}
+
+		case "suspend_membership":
+			memID := strField(input, "mem_id")
+			_, err := store.SuspendMembership(memID)
+			if !assertTenancyStepError(t, c.ID, stepLabel, expected, err) {
+				return
+			}
+
 		case "assert_equal":
 			actual := strField(input, "actual")
 			exp := strField(input, "expected")
@@ -545,4 +567,8 @@ func TestTransferOwnershipConformance(t *testing.T) {
 
 func TestListOrgsConformance(t *testing.T) {
 	runTenancyFixture(t, filepath.Join("fixtures", "tenancy", "list-orgs.json"))
+}
+
+func TestRevokeInvitationAuthzConformance(t *testing.T) {
+	runTenancyFixture(t, filepath.Join("fixtures", "tenancy", "revoke-invitation-authz.json"))
 }
