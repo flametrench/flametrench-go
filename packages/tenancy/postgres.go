@@ -1235,6 +1235,41 @@ func (s *PostgresTenancyStore) RevokeInvitation(invID, adminUsrID string) (Invit
 	return out, err
 }
 
+// RevokeInvitationAsSystem: see TenancyStore. The call site MUST be
+// gated to server-side system callers (ADR 0028 rule 7).
+func (s *PostgresTenancyStore) RevokeInvitationAsSystem(invID string) (Invitation, error) {
+	u, err := wireToUUID(invID)
+	if err != nil {
+		return Invitation{}, err
+	}
+	now := s.clock()
+	var out Invitation
+	err = s.inTx(func(tx pgx.Tx) error {
+		var status InvitationStatus
+		err := tx.QueryRow(s.ctx, `SELECT status FROM inv WHERE id = $1 FOR UPDATE`, u).Scan(&status)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return fmt.Errorf("inv %s: %w", invID, ErrNotFound)
+		}
+		if err != nil {
+			return err
+		}
+		if status != InvitationStatusPending {
+			return ErrInvitationNotPending
+		}
+		row := tx.QueryRow(s.ctx, `
+			UPDATE inv SET status = 'revoked', terminal_at = $2, terminal_by = NULL
+			WHERE id = $1 AND status = 'pending'
+			RETURNING `+invCols, u, now,
+		)
+		out, err = scanInvitation(row)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return ErrInvitationNotPending
+		}
+		return err
+	})
+	return out, err
+}
+
 // ─── Tuple accessors ───
 
 func (s *PostgresTenancyStore) ListTuplesForSubject(subjectType, subjectID string) ([]Tuple, error) {

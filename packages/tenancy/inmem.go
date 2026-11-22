@@ -811,6 +811,26 @@ func (s *InMemoryTenancyStore) RevokeInvitation(invID, adminUsrID string) (Invit
 	return inv, nil
 }
 
+// RevokeInvitationAsSystem: see TenancyStore. The call site MUST be
+// gated to server-side system callers (ADR 0028 rule 7).
+func (s *InMemoryTenancyStore) RevokeInvitationAsSystem(invID string) (Invitation, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	inv, ok := s.invitations[invID]
+	if !ok {
+		return Invitation{}, fmt.Errorf("inv %s: %w", invID, ErrNotFound)
+	}
+	if inv.Status != InvitationStatusPending {
+		return Invitation{}, ErrInvitationNotPending
+	}
+	now := s.now()
+	inv.Status = InvitationStatusRevoked
+	inv.TerminalAt = &now
+	inv.TerminalBy = nil
+	s.invitations[invID] = inv
+	return inv, nil
+}
+
 // ─── Tuple accessors ───
 
 func (s *InMemoryTenancyStore) ListTuplesForSubject(subjectType, subjectID string) ([]Tuple, error) {

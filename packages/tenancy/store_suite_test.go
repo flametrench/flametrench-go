@@ -728,6 +728,60 @@ func testInvitations(t *testing.T, newStore storeFactory) {
 			t.Errorf("err = %v; want ErrNotFound", err)
 		}
 	})
+
+	t.Run("RevokeAsSystem_pending_to_revoked_terminal_by_nil", func(t *testing.T) {
+		s, seed, done := newStore(t)
+		defer done()
+		owner := genUsrID(1)
+		seed(t, owner)
+		r, _ := s.CreateOrg(owner, CreateOrgOptions{})
+		inv, err := s.CreateInvitation(r.Org.ID, "alice@example.com", RoleMember, owner, time.Now().UTC().Add(24*time.Hour), nil)
+		if err != nil {
+			t.Fatalf("CreateInvitation: %v", err)
+		}
+		got, err := s.RevokeInvitationAsSystem(inv.ID)
+		if err != nil {
+			t.Fatalf("RevokeInvitationAsSystem: %v", err)
+		}
+		stored, err := s.GetInvitation(inv.ID)
+		if err != nil {
+			t.Fatalf("GetInvitation: %v", err)
+		}
+		for name, v := range map[string]Invitation{"returned": got, "stored": stored} {
+			if v.Status != InvitationStatusRevoked || v.TerminalAt == nil || v.TerminalBy != nil {
+				t.Errorf("%s: status=%q terminal_at=%v terminal_by=%v; want revoked, set, nil",
+					name, v.Status, v.TerminalAt, v.TerminalBy)
+			}
+		}
+	})
+
+	t.Run("RevokeAsSystem_not_pending_refused_unchanged", func(t *testing.T) {
+		s, seed, done := newStore(t)
+		defer done()
+		owner := genUsrID(1)
+		seed(t, owner)
+		r, _ := s.CreateOrg(owner, CreateOrgOptions{})
+		inv, _ := s.CreateInvitation(r.Org.ID, "alice@example.com", RoleMember, owner, time.Now().UTC().Add(24*time.Hour), nil)
+		first, err := s.RevokeInvitation(inv.ID, owner)
+		if err != nil {
+			t.Fatalf("RevokeInvitation: %v", err)
+		}
+		if _, err := s.RevokeInvitationAsSystem(inv.ID); !errors.Is(err, ErrInvitationNotPending) {
+			t.Fatalf("err = %v; want ErrInvitationNotPending", err)
+		}
+		got, _ := s.GetInvitation(inv.ID)
+		if got.TerminalBy == nil || *got.TerminalBy != owner || !got.TerminalAt.Equal(*first.TerminalAt) {
+			t.Errorf("refused system revoke changed invitation: terminal_by=%v terminal_at=%v", got.TerminalBy, got.TerminalAt)
+		}
+	})
+
+	t.Run("RevokeAsSystem_unknown_invitation_not_found", func(t *testing.T) {
+		s, _, done := newStore(t)
+		defer done()
+		if _, err := s.RevokeInvitationAsSystem("inv_00000000000000000000000000000001"); !errors.Is(err, ErrNotFound) {
+			t.Errorf("err = %v; want ErrNotFound", err)
+		}
+	})
 }
 
 // ─── Tuples ───
