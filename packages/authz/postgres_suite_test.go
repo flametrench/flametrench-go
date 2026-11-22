@@ -142,44 +142,33 @@ func TestPostgresShareCreatedByStatus(t *testing.T) {
 		return err
 	}
 
-	t.Run("revoked_creator_refused_creates_nothing", func(t *testing.T) {
-		authzTruncate(t, pool, ctx)
-		s := NewPostgresShareStore(ctx, pool)
-		creator := usrID(1)
-		authzSeedUsr(t, pool, ctx, creator)
-		setStatus(t, creator, "revoked")
-		err := create(s, creator)
-		var pe *PreconditionError
-		if !errors.As(err, &pe) || pe.Reason != "creator_revoked" {
-			t.Fatalf("err = %v; want PreconditionError(creator_revoked)", err)
-		}
-		page, err := s.ListSharesForObject("doc", objID("doc", 1), ListSharesOptions{})
-		if err != nil {
-			t.Fatalf("ListSharesForObject: %v", err)
-		}
-		if len(page.Data) != 0 {
-			t.Errorf("refused CreateShare left %d shares", len(page.Data))
-		}
-	})
+	for _, status := range []string{"revoked", "suspended"} {
+		t.Run(status+"_creator_refused_creates_nothing", func(t *testing.T) {
+			authzTruncate(t, pool, ctx)
+			s := NewPostgresShareStore(ctx, pool)
+			creator := usrID(1)
+			authzSeedUsr(t, pool, ctx, creator)
+			setStatus(t, creator, status)
+			err := create(s, creator)
+			var pe *PreconditionError
+			if !errors.As(err, &pe) || pe.Reason != "creator_not_active" {
+				t.Fatalf("err = %v; want PreconditionError(creator_not_active)", err)
+			}
+			page, err := s.ListSharesForObject("doc", objID("doc", 1), ListSharesOptions{})
+			if err != nil {
+				t.Fatalf("ListSharesForObject: %v", err)
+			}
+			if len(page.Data) != 0 {
+				t.Errorf("refused CreateShare left %d shares", len(page.Data))
+			}
+		})
+	}
 
 	t.Run("active_creator_ok", func(t *testing.T) {
 		authzTruncate(t, pool, ctx)
 		s := NewPostgresShareStore(ctx, pool)
 		creator := usrID(1)
 		authzSeedUsr(t, pool, ctx, creator)
-		if err := create(s, creator); err != nil {
-			t.Errorf("CreateShare: %v", err)
-		}
-	})
-
-	t.Run("suspended_creator_still_allowed", func(t *testing.T) {
-		// Out of scope for this change: shares.md says SHOULD for
-		// suspended creators, pending a spec clarification.
-		authzTruncate(t, pool, ctx)
-		s := NewPostgresShareStore(ctx, pool)
-		creator := usrID(1)
-		authzSeedUsr(t, pool, ctx, creator)
-		setStatus(t, creator, "suspended")
 		if err := create(s, creator); err != nil {
 			t.Errorf("CreateShare: %v", err)
 		}

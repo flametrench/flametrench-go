@@ -496,9 +496,9 @@ func (s *PostgresShareStore) CreateShare(in CreateShareInput) (CreateShareResult
 		return CreateShareResult{}, fmt.Errorf("begin tx: %w", err)
 	}
 	defer func() { _ = tx.Rollback(s.ctx) }()
-	// docs/shares.md §Validation (ADR 0012): created_by MUST resolve to a
-	// non-revoked usr. FOR SHARE serializes against a concurrent revoke
-	// (which locks the usr row FOR UPDATE).
+	// docs/shares.md §Validation (ADR 0012) and ADR 0029: created_by MUST
+	// resolve to an active usr. FOR SHARE serializes against a concurrent
+	// status change (which locks the usr row FOR UPDATE).
 	var creatorStatus string
 	err = tx.QueryRow(s.ctx, `SELECT status FROM usr WHERE id = $1 FOR SHARE`, createdByU).Scan(&creatorStatus)
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -507,8 +507,8 @@ func (s *PostgresShareStore) CreateShare(in CreateShareInput) (CreateShareResult
 	if err != nil {
 		return CreateShareResult{}, err
 	}
-	if creatorStatus == "revoked" {
-		return CreateShareResult{}, &PreconditionError{Msg: fmt.Sprintf("created_by %s is revoked", in.CreatedBy), Reason: "creator_revoked"}
+	if creatorStatus != "active" {
+		return CreateShareResult{}, &PreconditionError{Msg: fmt.Sprintf("created_by %s is %s", in.CreatedBy, creatorStatus), Reason: "creator_not_active"}
 	}
 	err = tx.QueryRow(s.ctx, `
 		INSERT INTO shr (id, object_type, object_id, relation, created_by, token_hash, expires_at, single_use)
