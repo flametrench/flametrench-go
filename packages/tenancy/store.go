@@ -47,6 +47,17 @@ type TenancyStore interface {
 	AcceptInvitation(invID string, opts AcceptInvitationOptions) (AcceptInvitationResult, error)
 	DeclineInvitation(invID string, asUsrID *string) (Invitation, error)
 	RevokeInvitation(invID, adminUsrID string) (Invitation, error)
+	// RevokeInvitationAsSystem revokes a pending invitation with no actor
+	// and no authorization check (ADR 0028): it becomes revoked with
+	// TerminalBy nil. Returns ErrNotFound for an unknown id and
+	// ErrInvitationNotPending if it is not pending.
+	//
+	// The caller MUST gate the call site to server-side system or
+	// automation code. It MUST NOT be reachable from any user-facing or
+	// tenant-scoped route. The SDK cannot enforce this, and conformance
+	// cannot detect a missing gate (ADR 0028 rule 7). For a revoke by a
+	// person, use RevokeInvitation.
+	RevokeInvitationAsSystem(invID string) (Invitation, error)
 
 	// ─── Tuple accessors ───
 

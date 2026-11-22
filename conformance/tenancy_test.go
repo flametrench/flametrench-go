@@ -8,6 +8,7 @@
 package conformance
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"path/filepath"
@@ -15,8 +16,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/flametrench/flametrench-go/packages/identity"
 	"github.com/flametrench/flametrench-go/packages/ids"
 	"github.com/flametrench/flametrench-go/packages/tenancy"
+
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 // classifyTenancyError maps a Go error to the fixture error class name.
@@ -122,12 +126,18 @@ func parsePreTuples(raw any) []tenancy.PreTuple {
 
 func runTenancyStepCase(t *testing.T, c StepCase) {
 	t.Helper()
-	store := tenancy.NewInMemoryTenancyStore()
+	runTenancySteps(t, c, tenancy.NewInMemoryTenancyStore(), func() (string, error) { return ids.Generate("usr") })
+}
+
+// runTenancySteps runs c against store. newUsr provides a usr id for each
+// named user in the preset (a real usr row, for stores that need one).
+func runTenancySteps(t *testing.T, c StepCase, store tenancy.TenancyStore, newUsr func() (string, error)) {
+	t.Helper()
 	captures := make(map[string]string)
 
 	// Pre-create usr_ IDs for each named user in the preset.
 	for _, name := range c.Users {
-		id, err := ids.Generate("usr")
+		id, err := newUsr()
 		if err != nil {
 			t.Fatalf("%s: generate usr id for %q: %v", c.ID, name, err)
 		}
@@ -428,6 +438,25 @@ func runTenancyStepCase(t *testing.T, c StepCase) {
 				}
 			}
 
+		case "revoke_invitation_as_system":
+			result, err := store.RevokeInvitationAsSystem(strField(input, "inv_id"))
+			if !assertTenancyStepError(t, c.ID, stepLabel, expected, err) {
+				return
+			}
+			if err == nil {
+				for varName, path := range rawStep.Captures {
+					if path == "terminal_by" {
+						// A null terminal_by captures as "", which is what
+						// assert_equal compares a JSON null expected against.
+						// A real terminal_by is a usr id, never "".
+						captures[varName] = ""
+						if result.TerminalBy != nil {
+							captures[varName] = *result.TerminalBy
+						}
+					}
+				}
+			}
+
 		case "suspend_membership":
 			memID := strField(input, "mem_id")
 			_, err := store.SuspendMembership(memID)
@@ -571,4 +600,40 @@ func TestListOrgsConformance(t *testing.T) {
 
 func TestRevokeInvitationAuthzConformance(t *testing.T) {
 	runTenancyFixture(t, filepath.Join("fixtures", "tenancy", "revoke-invitation-authz.json"))
+}
+
+func TestRevokeInvitationAsSystemConformance(t *testing.T) {
+	runTenancyFixture(t, filepath.Join("fixtures", "tenancy", "revoke-invitation-as-system.json"))
+}
+
+// TestRevokeInvitationPostgresConformance runs the two invitation-revoke
+// fixtures against the Postgres store, with real usr rows for the preset
+// users. Skipped when FT_GO_POSTGRES_URL is unset.
+func TestRevokeInvitationPostgresConformance(t *testing.T) {
+	url := pgURL(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	pool, err := pgxpool.New(ctx, url)
+	if err != nil {
+		t.Skipf("pgxpool.New: %v", err)
+	}
+	defer pool.Close()
+	if err := pool.Ping(ctx); err != nil {
+		t.Skipf("ping failed: %v", err)
+	}
+	idStore := identity.NewPostgresIdentityStore(ctx, pool)
+	newUsr := func() (string, error) {
+		u, err := idStore.CreateUser(nil)
+		return u.ID, err
+	}
+	for _, name := range []string{"revoke-invitation-authz.json", "revoke-invitation-as-system.json"} {
+		f := loadStepFixtureFile(t, filepath.Join("fixtures", "tenancy", name))
+		for _, c := range f.Tests {
+			c := c
+			t.Run(name+"/"+c.ID, func(t *testing.T) {
+				resetDB(t, pool)
+				runTenancySteps(t, c, tenancy.NewPostgresTenancyStore(ctx, pool), newUsr)
+			})
+		}
+	}
 }
