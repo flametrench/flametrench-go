@@ -1725,9 +1725,9 @@ func (s *PostgresIdentityStore) CreatePat(in CreatePatInput) (CreatePatResult, e
 	}
 	var pat PersonalAccessToken
 	err = s.inTx(func(tx pgx.Tx) error {
-		// ADR 0016 §Constraints: usr_id MUST refer to a non-revoked usr.
-		// FOR SHARE serializes against a concurrent RevokeUser (FOR UPDATE),
-		// so a PAT cannot be minted after the revoke cascade has run.
+		// ADR 0016 §Constraints and ADR 0029: usr_id MUST refer to an active
+		// usr. FOR SHARE serializes against a concurrent status change (FOR
+		// UPDATE), so a PAT cannot be minted after the revoke cascade has run.
 		var usrStatus Status
 		if err := tx.QueryRow(s.ctx, `SELECT status FROM usr WHERE id = $1 FOR SHARE`, usrU).Scan(&usrStatus); err != nil {
 			if errors.Is(err, pgx.ErrNoRows) {
@@ -1735,10 +1735,7 @@ func (s *PostgresIdentityStore) CreatePat(in CreatePatInput) (CreatePatResult, e
 			}
 			return err
 		}
-		if usrStatus == StatusRevoked {
-			return &PreconditionError{Msg: "cannot create PAT for revoked user", Reason: "user_revoked"}
-		}
-		// ADR 0029: no issuance to a suspended user either.
+		// ADR 0029: one reason for suspended and revoked, pinned across SDKs.
 		if usrStatus != StatusActive {
 			return &PreconditionError{Msg: fmt.Sprintf("cannot create PAT for %s user", usrStatus), Reason: "user_not_active"}
 		}

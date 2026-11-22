@@ -1269,11 +1269,8 @@ func (s *InMemoryIdentityStore) CreatePat(in CreatePatInput) (CreatePatResult, e
 	if !ok {
 		return CreatePatResult{}, fmt.Errorf("user %s: %w", in.UsrID, ErrNotFound)
 	}
-	// ADR 0016 §Constraints: usr_id MUST refer to a non-revoked usr.
-	if u.Status == StatusRevoked {
-		return CreatePatResult{}, &PreconditionError{Msg: "cannot create PAT for revoked user", Reason: "user_revoked"}
-	}
-	// ADR 0029: no issuance to a suspended user either.
+	// ADR 0016 §Constraints and ADR 0029: usr_id MUST refer to an active
+	// usr. One reason for suspended and revoked, pinned across SDKs.
 	if u.Status != StatusActive {
 		return CreatePatResult{}, &PreconditionError{Msg: fmt.Sprintf("cannot create PAT for %s user", u.Status), Reason: "user_not_active"}
 	}

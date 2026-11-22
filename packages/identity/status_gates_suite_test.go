@@ -196,39 +196,32 @@ func testUserStatusGates(t *testing.T, newStore storeFactory) {
 		}
 	})
 
-	t.Run("create_pat_revoked_user_refused_creates_nothing", func(t *testing.T) {
-		s, done := newStore(t)
-		defer done()
-		u := mustUser(t, s, "")
-		if _, err := s.RevokeUser(u.ID); err != nil {
-			t.Fatalf("RevokeUser: %v", err)
-		}
-		_, err := s.CreatePat(CreatePatInput{UsrID: u.ID, Name: "ci"})
-		wantPrecondition(t, err, "user_revoked")
-		page, err := s.ListPatsForUser(u.ID, ListPatsOptions{})
-		if err != nil {
-			t.Fatalf("ListPatsForUser: %v", err)
-		}
-		if len(page.Data) != 0 {
-			t.Errorf("refused CreatePat left %d PATs", len(page.Data))
-		}
-	})
-
-	t.Run("create_pat_suspended_user_refused_creates_nothing", func(t *testing.T) {
-		s, done := newStore(t)
-		defer done()
-		u := mustUser(t, s, "")
-		if _, err := s.SuspendUser(u.ID); err != nil {
-			t.Fatalf("SuspendUser: %v", err)
-		}
-		_, err := s.CreatePat(CreatePatInput{UsrID: u.ID, Name: "ci"})
-		wantPrecondition(t, err, "user_not_active")
-		page, err := s.ListPatsForUser(u.ID, ListPatsOptions{})
-		if err != nil {
-			t.Fatalf("ListPatsForUser: %v", err)
-		}
-		if len(page.Data) != 0 {
-			t.Errorf("refused CreatePat left %d PATs", len(page.Data))
+	t.Run("create_pat_non_active_user_refused_creates_nothing", func(t *testing.T) {
+		// The reason is pinned to user_not_active for both statuses, in every SDK.
+		for _, to := range []Status{StatusSuspended, StatusRevoked} {
+			t.Run(string(to), func(t *testing.T) {
+				s, done := newStore(t)
+				defer done()
+				u := mustUser(t, s, "")
+				var err error
+				if to == StatusSuspended {
+					_, err = s.SuspendUser(u.ID)
+				} else {
+					_, err = s.RevokeUser(u.ID)
+				}
+				if err != nil {
+					t.Fatalf("transition: %v", err)
+				}
+				_, err = s.CreatePat(CreatePatInput{UsrID: u.ID, Name: "ci"})
+				wantPrecondition(t, err, "user_not_active")
+				page, err := s.ListPatsForUser(u.ID, ListPatsOptions{})
+				if err != nil {
+					t.Fatalf("ListPatsForUser: %v", err)
+				}
+				if len(page.Data) != 0 {
+					t.Errorf("refused CreatePat left %d PATs", len(page.Data))
+				}
+			})
 		}
 	})
 
