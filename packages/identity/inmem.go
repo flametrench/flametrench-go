@@ -53,6 +53,7 @@ type InMemoryIdentityStore struct {
 	recoveryHashes         map[string][]string  // mfa_id → 10 PHC hashes
 	recoveryConsumed       map[string][]bool    // parallel array
 	mfaSingleton           map[string]string    // "usr|type" → mfa_id (singleton totp/recovery)
+	totpLastAcceptedStep   map[string]int64     // mfa_id → last accepted TOTP time-step (replay protection)
 	mfaPolicies            map[string]UserMfaPolicy
 
 	// PATs
@@ -80,7 +81,8 @@ func NewInMemoryIdentityStore() *InMemoryIdentityStore {
 		recoveryHashes:             map[string][]string{},
 		recoveryConsumed:           map[string][]bool{},
 		mfaSingleton:               map[string]string{},
-		mfaPolicies:                map[string]UserMfaPolicy{},
+		totpLastAcceptedStep:       map[string]int64{},
+		mfaPolicies:               map[string]UserMfaPolicy{},
 		pats:                       map[string]PersonalAccessToken{},
 		patSecretHashes:            map[string]string{},
 		patLastUsedPersist:         map[string]time.Time{},
@@ -281,8 +283,25 @@ func (s *InMemoryIdentityStore) transitionUser(usrID string, to Status) (User, e
 				delete(s.activeCredByIdent, identKey(c.Type, c.Identifier))
 			}
 		}
+		// ADR 0016 §Constraints: PATs auto-revoke when their owner is revoked.
+		now := s.now()
+		for pid, p := range s.pats {
+			if p.UsrID == usrID && p.RevokedAt == nil {
+				p.RevokedAt = &now
+				p.Status = PatStatusRevoked
+				p.UpdatedAt = now
+				s.pats[pid] = p
+			}
+		}
 	}
 	return u, nil
+}
+
+// userActiveLocked reports whether usrID exists and is active. Caller
+// holds s.mu.
+func (s *InMemoryIdentityStore) userActiveLocked(usrID string) bool {
+	u, ok := s.users[usrID]
+	return ok && u.Status == StatusActive
 }
 
 func (s *InMemoryIdentityStore) cascadeRevokeSessionsForUser(usrID string) {
@@ -587,6 +606,16 @@ func (s *InMemoryIdentityStore) VerifyPassword(identifier, password string) (Ver
 	if !ok {
 		return VerifiedCredential{}, ErrInvalidCredential
 	}
+	// User status is checked only AFTER the hash verify, and a non-active
+	// user gets the same InvalidCredential as a wrong password, so neither
+	// timing nor the error discloses the user's status (docs/identity.md
+	// §Lifecycle: a suspended user cannot authenticate).
+	s.mu.Lock()
+	active := s.userActiveLocked(cred.UsrID)
+	s.mu.Unlock()
+	if !active {
+		return VerifiedCredential{}, ErrInvalidCredential
+	}
 	mfaRequired := false
 	if hasPolicy {
 		mfaRequired = policy.IsActiveNow(s.now())
@@ -599,8 +628,14 @@ func (s *InMemoryIdentityStore) VerifyPassword(identifier, password string) (Ver
 func (s *InMemoryIdentityStore) CreateSession(usrID, credID string, ttlSeconds int) (SessionWithToken, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if _, ok := s.users[usrID]; !ok {
+	u, ok := s.users[usrID]
+	if !ok {
 		return SessionWithToken{}, fmt.Errorf("user %s: %w", usrID, ErrNotFound)
+	}
+	// User status is checked before credential status (matches the
+	// other SDKs): no session is issued to a suspended or revoked user.
+	if u.Status != StatusActive {
+		return SessionWithToken{}, &PreconditionError{Msg: fmt.Sprintf("cannot create session for %s user", u.Status), Reason: "user_not_active"}
 	}
 	c, ok := s.credentials[credID]
 	if !ok {
@@ -870,6 +905,20 @@ func (s *InMemoryIdentityStore) EnrollRecoveryFactor(usrID string) (RecoveryEnro
 	if _, ok := s.users[usrID]; !ok {
 		return RecoveryEnrollmentResult{}, fmt.Errorf("user %s: %w", usrID, ErrNotFound)
 	}
+	// ADR 0008 §Recovery code semantics: re-enrolling after the set is
+	// exhausted generates a fresh set and revokes the old one, leaving
+	// exactly one active set. Re-enrolling over an unexhausted set is
+	// refused (the accepted text is silent there; this matches the other
+	// SDKs).
+	var prevID string
+	for id, f := range s.factors {
+		if f.UsrID == usrID && f.Type == FactorTypeRecovery && f.Status == FactorStatusActive {
+			if f.Remaining > 0 {
+				return RecoveryEnrollmentResult{}, &PreconditionError{Msg: "user already has an active recovery factor", Reason: "active_singleton_exists"}
+			}
+			prevID = id
+		}
+	}
 	codes, err := GenerateRecoveryCodes()
 	if err != nil {
 		return RecoveryEnrollmentResult{}, err
@@ -893,6 +942,13 @@ func (s *InMemoryIdentityStore) EnrollRecoveryFactor(usrID string) (RecoveryEnro
 		Remaining: len(codes),
 		CreatedAt: now, UpdatedAt: now,
 	}
+	if prevID != "" {
+		prev := s.factors[prevID]
+		prev.Status = FactorStatusRevoked
+		prev.UpdatedAt = now
+		s.factors[prevID] = prev
+		f.Replaces = &prevID
+	}
 	s.factors[mfaID] = f
 	s.recoveryHashes[mfaID] = hashes
 	s.recoveryConsumed[mfaID] = make([]bool, len(codes))
@@ -910,7 +966,7 @@ func (s *InMemoryIdentityStore) ConfirmTotpFactor(mfaID, code string) (Factor, e
 		return Factor{}, &PreconditionError{Msg: "factor not in pending TOTP state", Reason: "invalid_transition"}
 	}
 	secret := s.totpSecrets[mfaID]
-	ok2, err := TotpVerify(secret, code, s.now().Unix(), 1, TotpComputeOptions{})
+	step, ok2, err := TotpMatchStep(secret, code, s.now().Unix(), 1, TotpComputeOptions{})
 	if err != nil {
 		return Factor{}, err
 	}
@@ -920,6 +976,8 @@ func (s *InMemoryIdentityStore) ConfirmTotpFactor(mfaID, code string) (Factor, e
 	f.Status = FactorStatusActive
 	f.UpdatedAt = s.now()
 	s.factors[mfaID] = f
+	// Enrollment confirmation counts as an acceptance for replay protection.
+	s.totpLastAcceptedStep[mfaID] = step
 	s.mfaSingleton[f.UsrID+"|totp"] = mfaID
 	return f, nil
 }
@@ -1087,26 +1145,32 @@ func (s *InMemoryIdentityStore) verifyWebAuthnProof(usrID string, proof WebAuthn
 }
 
 func (s *InMemoryIdentityStore) verifyTotpProof(usrID string, proof TotpProof) (MfaVerifyResult, error) {
+	// The lock is held across match, replay check and step update, so two
+	// concurrent verifies of one code cannot both succeed.
 	s.mu.Lock()
+	defer s.mu.Unlock()
 	mfaID, ok := s.mfaSingleton[usrID+"|totp"]
 	if !ok {
-		s.mu.Unlock()
 		return MfaVerifyResult{}, fmt.Errorf("no active TOTP factor for user: %w", ErrNotFound)
 	}
 	f := s.factors[mfaID]
 	if f.Status != FactorStatusActive {
-		s.mu.Unlock()
 		return MfaVerifyResult{}, ErrInvalidCredential
 	}
 	secret := s.totpSecrets[mfaID]
-	s.mu.Unlock()
-	ok2, err := TotpVerify(secret, proof.Code, s.now().Unix(), 1, TotpComputeOptions{})
+	step, ok2, err := TotpMatchStep(secret, proof.Code, s.now().Unix(), 1, TotpComputeOptions{})
 	if err != nil {
 		return MfaVerifyResult{}, err
 	}
 	if !ok2 {
 		return MfaVerifyResult{}, ErrInvalidCredential
 	}
+	// Strict step replay: reject any step at or before the
+	// last accepted one.
+	if last, seen := s.totpLastAcceptedStep[mfaID]; seen && step <= last {
+		return MfaVerifyResult{}, ErrReplayedTotp
+	}
+	s.totpLastAcceptedStep[mfaID] = step
 	return MfaVerifyResult{MfaID: mfaID, Type: FactorTypeTotp, MfaVerifiedAt: s.now()}, nil
 }
 
@@ -1186,8 +1250,13 @@ func (s *InMemoryIdentityStore) SetUserMfaPolicy(usrID string, required bool, gr
 func (s *InMemoryIdentityStore) CreatePat(in CreatePatInput) (CreatePatResult, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if _, ok := s.users[in.UsrID]; !ok {
+	u, ok := s.users[in.UsrID]
+	if !ok {
 		return CreatePatResult{}, fmt.Errorf("user %s: %w", in.UsrID, ErrNotFound)
+	}
+	// ADR 0016 §Constraints: usr_id MUST refer to a non-revoked usr.
+	if u.Status == StatusRevoked {
+		return CreatePatResult{}, &PreconditionError{Msg: "cannot create PAT for revoked user", Reason: "user_revoked"}
 	}
 	if len(in.Name) < 1 || len(in.Name) > 120 {
 		return CreatePatResult{}, &PreconditionError{Msg: "name must be 1-120 chars", Reason: "invalid_name"}
@@ -1342,9 +1411,18 @@ func (s *InMemoryIdentityStore) VerifyPatToken(token string) (VerifiedPat, error
 		return VerifiedPat{}, ErrInvalidPatToken
 	}
 
-	// Update last_used_at with coalescing.
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	// Owner status is checked AFTER the secret verify and conflated into
+	// ErrInvalidPatToken, so the response discloses nothing about the
+	// owner's status (docs/identity.md §Lifecycle: a suspended user cannot
+	// authenticate). Evaluated at verify time, so reinstatement restores
+	// the same token.
+	if !s.userActiveLocked(pat.UsrID) {
+		return VerifiedPat{}, ErrInvalidPatToken
+	}
+
+	// Update last_used_at with coalescing.
 	now := s.now()
 	prev, hadPrev := s.patLastUsedPersist[patID]
 	if !hadPrev || now.Sub(prev) >= time.Duration(s.patLastUsedCoalesceSeconds)*time.Second {

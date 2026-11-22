@@ -227,31 +227,46 @@ func TotpCompute(secret []byte, timestamp int64, opts TotpComputeOptions) (strin
 // Returns false on any verification failure; never raises on
 // malformed input.
 func TotpVerify(secret []byte, candidate string, timestamp int64, driftWindows int, opts TotpComputeOptions) (bool, error) {
+	_, ok, err := TotpMatchStep(secret, candidate, timestamp, driftWindows, opts)
+	return ok, err
+}
+
+// TotpMatchStep is TotpVerify that also returns the time-step counter
+// (floor(unix_time / period)) the candidate matched. When the candidate
+// matches more than one step in the drift window, the highest is
+// returned. Stores use the step for replay protection: a matched step
+// at or before the factor's last accepted step is a replay.
+func TotpMatchStep(secret []byte, candidate string, timestamp int64, driftWindows int, opts TotpComputeOptions) (int64, bool, error) {
 	if driftWindows < 0 || driftWindows > 10 {
-		return false, fmt.Errorf("driftWindows must be 0..10, got %d", driftWindows)
+		return 0, false, fmt.Errorf("driftWindows must be 0..10, got %d", driftWindows)
 	}
 	digits := opts.digits()
 	period := opts.period()
 
 	if len(candidate) != digits {
-		return false, nil
+		return 0, false, nil
 	}
 	for _, c := range candidate {
 		if c < '0' || c > '9' {
-			return false, nil
+			return 0, false, nil
 		}
 	}
+	var matched int64
+	found := false
+	// Every offset is computed and compared (no early exit) so timing
+	// does not reveal which step matched.
 	for offset := -driftWindows; offset <= driftWindows; offset++ {
 		ts := timestamp + int64(offset)*int64(period)
 		expected, err := TotpCompute(secret, ts, opts)
 		if err != nil {
-			return false, err
+			return 0, false, err
 		}
 		if subtle.ConstantTimeCompare([]byte(expected), []byte(candidate)) == 1 {
-			return true, nil
+			matched = ts / int64(period)
+			found = true
 		}
 	}
-	return false, nil
+	return matched, found, nil
 }
 
 // GenerateTotpSecret returns a fresh TOTP shared secret. 20 bytes (160

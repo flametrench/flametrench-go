@@ -49,6 +49,7 @@ func runIdentitySuite(t *testing.T, newStore storeFactory) {
 	t.Run("MfaWebAuthn", func(t *testing.T) { testMfaWebAuthn(t, newStore) })
 	t.Run("FactorLifecycle", func(t *testing.T) { testFactorLifecycle(t, newStore) })
 	t.Run("Errors", func(t *testing.T) { testErrorTypes(t, newStore) })
+	t.Run("StatusGates", func(t *testing.T) { testStatusGates(t, newStore) })
 	t.Run("BearerClassify", func(t *testing.T) { testBearerClassify(t) })
 }
 
@@ -948,13 +949,31 @@ func testMfaTotp(t *testing.T, newStore storeFactory) {
 		secret, _ := base32.StdEncoding.WithPadding(base32.NoPadding).DecodeString(strings.ToUpper(res.SecretB32))
 		code, _ := TotpCompute(secret, time.Now().UTC().Unix(), TotpComputeOptions{})
 		_, _ = s.ConfirmTotpFactor(res.Factor.ID, code)
-		// Same code is reusable within the same window for VerifyMfa.
-		vr, err := s.VerifyMfa(u.ID, MfaProof{Totp: &TotpProof{Code: code}})
+		// Confirmation consumed the code's step (strict step replay), so
+		// the code for the next step (inside the +1 drift window) verifies.
+		next, _ := TotpCompute(secret, time.Now().UTC().Unix()+int64(DefaultTotpPeriod), TotpComputeOptions{})
+		vr, err := s.VerifyMfa(u.ID, MfaProof{Totp: &TotpProof{Code: next}})
 		if err != nil {
 			t.Fatalf("VerifyMfa: %v", err)
 		}
 		if vr.Type != FactorTypeTotp {
 			t.Errorf("Type = %q; want totp", vr.Type)
+		}
+	})
+
+	t.Run("VerifyMfa_totp_confirm_code_replay_rejected", func(t *testing.T) {
+		s, done := newStore(t)
+		defer done()
+		u := mustUser(t, s, "")
+		res, _ := s.EnrollTotpFactor(u.ID, "alice", TotpComputeOptions{})
+		secret, _ := base32.StdEncoding.WithPadding(base32.NoPadding).DecodeString(strings.ToUpper(res.SecretB32))
+		code, _ := TotpCompute(secret, time.Now().UTC().Unix(), TotpComputeOptions{})
+		if _, err := s.ConfirmTotpFactor(res.Factor.ID, code); err != nil {
+			t.Fatalf("ConfirmTotpFactor: %v", err)
+		}
+		// Enrollment confirmation counts as an acceptance.
+		if _, err := s.VerifyMfa(u.ID, MfaProof{Totp: &TotpProof{Code: code}}); !errors.Is(err, ErrReplayedTotp) {
+			t.Errorf("replaying the confirm code: err = %v; want ErrReplayedTotp", err)
 		}
 	})
 

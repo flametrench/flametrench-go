@@ -41,6 +41,10 @@ var (
 	ErrCredentialTypeMismatch = &Error{Msg: "credential type mismatch", Code: "cred_type_mismatch"}
 	ErrAlreadyTerminal      = &Error{Msg: "entity is already in a terminal state", Code: "already_terminal"}
 	ErrInvalidPatToken      = &Error{Msg: "invalid personal access token", Code: "pat.invalid"}
+	// ErrReplayedTotp (fixture name ReplayedTotpError) is raised when a
+	// TOTP code matches a time-step at or before the factor's last
+	// accepted step (ADR 0008 §verifyMfa; strict step replay).
+	ErrReplayedTotp = &Error{Msg: "TOTP code already used", Code: "mfa.totp_replayed"}
 )
 
 // PreconditionError is raised when a precondition fails. Reason

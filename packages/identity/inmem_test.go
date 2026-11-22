@@ -176,8 +176,13 @@ func TestInMemTotpEnrollAndVerify(t *testing.T) {
 		t.Errorf("confirmed factor status = %q; want active", confirmed.Status)
 	}
 
-	// VerifyMfa with same code window succeeds.
-	result, err := s.VerifyMfa(u.ID, MfaProof{Totp: &TotpProof{Code: code}})
+	// Confirmation consumed the code's step (strict step replay); the
+	// next step's code (inside the +1 drift window) verifies.
+	next, err := TotpCompute(secret, time.Now().UTC().Unix()+int64(DefaultTotpPeriod), TotpComputeOptions{})
+	if err != nil {
+		t.Fatalf("TotpCompute: %v", err)
+	}
+	result, err := s.VerifyMfa(u.ID, MfaProof{Totp: &TotpProof{Code: next}})
 	if err != nil {
 		t.Fatalf("VerifyMfa: %v", err)
 	}
